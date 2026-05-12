@@ -41,6 +41,8 @@ cfg.MODEL.HEAD.NUM_CHANNELS = 256
 cfg.MODEL.CVTP = edict()
 cfg.MODEL.CVTP.ENABLE = False
 cfg.MODEL.CVTP.TEMPLATE_DROP_RATE = 0.0
+cfg.MODEL.CVTP.DROP_STRATEGY = "mixed"  # random | hard | easy | mixed
+cfg.MODEL.CVTP.HARD_RATIO = 0.5  # mixed: fraction of dropped tokens chosen by hard similarity
 
 # TRAIN
 cfg.TRAIN = edict()

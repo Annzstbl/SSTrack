@@ -102,11 +102,75 @@ class VisionTransformerCE(VisionTransformer):
         self.template_null_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         nn.init.trunc_normal_(self.template_null_token, std=0.02)
 
+    def _apply_template_drop(
+            self, z, T_z, template_drop_rate, template_drop_mode,
+            template_drop_strategy, template_drop_query, template_hard_ratio):
+        """Training-only template token degradation; random Bernoulli or structured hard/easy/mixed."""
+        BT, N_z, _ = z.shape
+        use_structured = (
+            template_drop_strategy in ("hard", "easy", "mixed")
+            and template_drop_query is not None
+        )
+
+        if template_drop_strategy == "random" or not use_structured:
+            keep_mask = (torch.rand(BT, N_z, 1, device=z.device, dtype=z.dtype) > template_drop_rate).to(
+                z.dtype)
+        else:
+            num_drop = int(template_drop_rate * N_z)
+            num_drop = max(1, min(num_drop, N_z))
+
+            q = template_drop_query.mean(dim=1, keepdim=True)
+            q = q.repeat_interleave(T_z, dim=0)
+            q = F.normalize(q, dim=-1)
+            z_norm = F.normalize(z, dim=-1)
+            score = torch.matmul(z_norm, q.transpose(1, 2)).squeeze(-1)
+
+            if template_drop_strategy == "hard":
+                drop_idx = score.topk(num_drop, dim=1, largest=True).indices
+            elif template_drop_strategy == "easy":
+                drop_idx = score.topk(num_drop, dim=1, largest=False).indices
+            else:
+                num_hard = int(num_drop * template_hard_ratio)
+                num_hard = max(0, min(num_hard, num_drop))
+                num_rand = num_drop - num_hard
+
+                if num_hard > 0:
+                    hard_idx = score.topk(num_hard, dim=1, largest=True).indices
+                else:
+                    hard_idx = torch.empty(BT, 0, dtype=torch.long, device=z.device)
+
+                if num_rand > 0:
+                    rand_score = torch.rand(BT, N_z, device=z.device, dtype=z.dtype)
+                    if num_hard > 0:
+                        rand_score.scatter_(1, hard_idx, -1.0)
+                    rand_idx = rand_score.topk(num_rand, dim=1, largest=True).indices
+                else:
+                    rand_idx = torch.empty(BT, 0, dtype=torch.long, device=z.device)
+
+                cat_parts = [t for t in (hard_idx, rand_idx) if t.shape[1] > 0]
+                drop_idx = torch.cat(cat_parts, dim=1)
+
+            keep_mask = torch.ones(BT, N_z, 1, dtype=torch.bool, device=z.device)
+            keep_mask.scatter_(1, drop_idx.unsqueeze(-1), False)
+            keep_mask = keep_mask.to(z.dtype)
+
+        if template_drop_mode == "null":
+            null_tok = self.template_null_token.expand(BT, N_z, -1)
+            z = z * keep_mask + null_tok * (1.0 - keep_mask)
+        elif template_drop_mode == "zero":
+            z = z * keep_mask
+        else:
+            raise ValueError(f"Unknown template_drop_mode: {template_drop_mode}")
+        return z
+
     def forward_features(self, z, xs, mask_z=None, mask_x=None,
                          ce_template_mask=None, ce_keep_rate=None,
                          return_last_attn=False, track_query=None,
                          token_type="add", token_len=1,
                          template_drop_rate=0.0, template_drop_mode="null",
+                         template_drop_strategy="random",
+                         template_drop_query=None,
+                         template_hard_ratio=0.5,
                          ):
         B, H, W = xs[-1].shape[0], xs[-1].shape[2], xs[-1].shape[3]
         num_searches = len(xs)
@@ -123,16 +187,10 @@ class VisionTransformerCE(VisionTransformer):
         z = self.patch_embed(z)
 
         if self.training and template_drop_rate > 0:
-            BT, N_z, _ = z.shape
-            keep_mask = (torch.rand(BT, N_z, 1, device=z.device, dtype=z.dtype) > template_drop_rate).to(
-                z.dtype)
-            if template_drop_mode == "null":
-                null_tok = self.template_null_token.expand(BT, N_z, -1)
-                z = z * keep_mask + null_tok * (1.0 - keep_mask)
-            elif template_drop_mode == "zero":
-                z = z * keep_mask
-            else:
-                raise ValueError(f"Unknown template_drop_mode: {template_drop_mode}")
+            z = self._apply_template_drop(
+                z, T_z, template_drop_rate, template_drop_mode,
+                template_drop_strategy, template_drop_query, template_hard_ratio,
+            )
 
         # attention mask handling
         # B, H, W
@@ -240,11 +298,17 @@ class VisionTransformerCE(VisionTransformer):
     def forward(self, z, x, ce_template_mask=None, ce_keep_rate=None,
                 tnc_keep_rate=None, return_last_attn=False, track_query=None,
                 token_type="add", token_len=1,
-                template_drop_rate=0.0, template_drop_mode="null"):
+                template_drop_rate=0.0, template_drop_mode="null",
+                template_drop_strategy="random",
+                template_drop_query=None,
+                template_hard_ratio=0.5):
         x, aux_dict, top_k_indices = self.forward_features(
             z, x, ce_template_mask=ce_template_mask, ce_keep_rate=ce_keep_rate,
             track_query=track_query, token_type=token_type, token_len=token_len,
             template_drop_rate=template_drop_rate, template_drop_mode=template_drop_mode,
+            template_drop_strategy=template_drop_strategy,
+            template_drop_query=template_drop_query,
+            template_hard_ratio=template_hard_ratio,
         )
         return x, aux_dict, top_k_indices
 

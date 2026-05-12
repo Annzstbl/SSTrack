@@ -376,11 +376,21 @@ class SSTrack(nn.Module):
         else:
             raise ValueError("Unknown PROMPT_TYPE")
 
-    def _backbone_template_drop_kw(self, template_drop_rate, template_drop_mode="null"):
+    def _backbone_template_drop_kw(
+            self,
+            template_drop_rate,
+            template_drop_mode="null",
+            template_drop_strategy="random",
+            template_drop_query=None,
+            template_hard_ratio=0.5,
+    ):
         if isinstance(self.backbone, VisionTransformerCE):
             return {
                 "template_drop_rate": template_drop_rate,
                 "template_drop_mode": template_drop_mode,
+                "template_drop_strategy": template_drop_strategy,
+                "template_drop_query": template_drop_query,
+                "template_hard_ratio": template_hard_ratio,
             }
         return {}
 
@@ -402,11 +412,14 @@ class SSTrack(nn.Module):
         cvtp_on = self.training and cvtp_cfg is not None and bool(getattr(cvtp_cfg, "ENABLE", False))
         _cvtp_rate = float(cvtp_template_drop_rate) if cvtp_template_drop_rate is not None else 0.0
         cvtp_drop = _cvtp_rate if cvtp_on else 0.0
+        cvtp_strategy = str(getattr(cvtp_cfg, "DROP_STRATEGY", "random")) if cvtp_cfg is not None else "random"
+        cvtp_hard_ratio = float(getattr(cvtp_cfg, "HARD_RATIO", 0.5)) if cvtp_cfg is not None else 0.5
 
         out_dict = []
         for i in range(self.num_searches-1, len(search)): # self.num_searches = 2 = DATA.SEARCH.LENGTH  len(search) = DATA.SEARCH.NUMBER。这里表示dataloader取了3帧，这里可以滑动两次，每次取2帧。 i表示的是当前最后帧的索引。
             use_cvtp_drop = cvtp_on and (track_query is not None)
             cur_drop = cvtp_drop if use_cvtp_drop else 0.0
+            drop_query = track_query if use_cvtp_drop else None
             # search的提取做了修改，以获取list形式的search
             # 返回的x_大致为 cls_token + 模板tokens + 搜索tokens
             # self.feat_len_s = 576
@@ -418,7 +431,13 @@ class SSTrack(nn.Module):
                 return_last_attn=return_last_attn,
                 track_query=track_query,
                 token_len=self.token_len,
-                **self._backbone_template_drop_kw(cur_drop, "null"),
+                **self._backbone_template_drop_kw(
+                    cur_drop,
+                    "null",
+                    template_drop_strategy=cvtp_strategy,
+                    template_drop_query=drop_query,
+                    template_hard_ratio=cvtp_hard_ratio,
+                ),
             )
             # search部分只保留最后一个search的特征图
             x = torch.cat((x_[:, :-1 * self.num_searches * self.feat_len_s, :], x_[:, -self.feat_len_s:, :]), dim=1)

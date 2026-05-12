@@ -82,3 +82,21 @@ def adjust_keep_rate(epoch, warmup_epochs, total_epochs, ITERS_PER_EPOCH, base_k
         * (math.cos(iters / total_iters * math.pi) + 1) * 0.5
 
     return keep_rate
+
+
+def adjust_cvtp_template_drop_rate(epoch, start_epoch, warm_epochs, max_drop):
+    """Linear ramp of CVTP template drop rate by epoch (same epoch convention as CE scheduling).
+
+    epoch: current training epoch (typically 1-based, from trainer).
+    start_epoch: first epoch where drop begins to ramp from 0.
+    warm_epochs: number of epochs over which drop linearly increases to max_drop.
+    max_drop: target TEMPLATE_DROP_RATE after warmup.
+    """
+    if max_drop <= 0 or warm_epochs <= 0:
+        return 0.0 if epoch < start_epoch else float(max_drop)
+    if epoch < start_epoch:
+        return 0.0
+    if epoch >= start_epoch + warm_epochs:
+        return float(max_drop)
+    t = (epoch - start_epoch) / float(warm_epochs)
+    return float(max_drop) * t

@@ -93,6 +93,7 @@ class LTRTrainer(BaseTrainer):
                 self.optimizer.zero_grad()
                 if not self.use_amp:
                     loss.backward()
+                    # print(all(p.grad is None for p in self.actor.net.prompt.parameters()))
                     if self.settings.grad_clip_norm > 0:
                         torch.nn.utils.clip_grad_norm_(self.actor.net.parameters(), self.settings.grad_clip_norm)
                     self.optimizer.step()

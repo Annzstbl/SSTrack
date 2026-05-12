@@ -43,7 +43,7 @@ def run_training(script_name, config_name, cudnn_benchmark=True, local_rank=-1, 
 
     print('script_name: {}.py  config_name: {}.yaml'.format(script_name, config_name))
 
-    # 设置 NCCL 超时时间和阻塞等待
+    # NCCL: blocking wait and longer timeout (seconds)
     os.environ['NCCL_BLOCKING_WAIT'] = '1'
     os.environ['NCCL_TIMEOUT'] = '3600'
 

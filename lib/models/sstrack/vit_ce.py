@@ -99,10 +99,14 @@ class VisionTransformerCE(VisionTransformer):
 
         self.init_weights(weight_init)
 
+        self.template_null_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        nn.init.trunc_normal_(self.template_null_token, std=0.02)
+
     def forward_features(self, z, xs, mask_z=None, mask_x=None,
                          ce_template_mask=None, ce_keep_rate=None,
                          return_last_attn=False, track_query=None,
-                         token_type="add", token_len=1
+                         token_type="add", token_len=1,
+                         template_drop_rate=0.0, template_drop_mode="null",
                          ):
         B, H, W = xs[-1].shape[0], xs[-1].shape[2], xs[-1].shape[3]
         num_searches = len(xs)
@@ -117,6 +121,18 @@ class VisionTransformerCE(VisionTransformer):
         _, T_z, C_z, H_z, W_z = z.shape
         z = z.flatten(0, 1)
         z = self.patch_embed(z)
+
+        if self.training and template_drop_rate > 0:
+            BT, N_z, _ = z.shape
+            keep_mask = (torch.rand(BT, N_z, 1, device=z.device, dtype=z.dtype) > template_drop_rate).to(
+                z.dtype)
+            if template_drop_mode == "null":
+                null_tok = self.template_null_token.expand(BT, N_z, -1)
+                z = z * keep_mask + null_tok * (1.0 - keep_mask)
+            elif template_drop_mode == "zero":
+                z = z * keep_mask
+            else:
+                raise ValueError(f"Unknown template_drop_mode: {template_drop_mode}")
 
         # attention mask handling
         # B, H, W
@@ -222,10 +238,14 @@ class VisionTransformerCE(VisionTransformer):
         return x, aux_dict, top_k_indices
 
     def forward(self, z, x, ce_template_mask=None, ce_keep_rate=None,
-                tnc_keep_rate=None, return_last_attn=False, track_query=None, 
-                token_type="add", token_len=1):
-        x, aux_dict, top_k_indices = self.forward_features(z, x, ce_template_mask=ce_template_mask, ce_keep_rate=ce_keep_rate,
-                                            track_query=track_query, token_type=token_type, token_len=token_len)
+                tnc_keep_rate=None, return_last_attn=False, track_query=None,
+                token_type="add", token_len=1,
+                template_drop_rate=0.0, template_drop_mode="null"):
+        x, aux_dict, top_k_indices = self.forward_features(
+            z, x, ce_template_mask=ce_template_mask, ce_keep_rate=ce_keep_rate,
+            track_query=track_query, token_type=token_type, token_len=token_len,
+            template_drop_rate=template_drop_rate, template_drop_mode=template_drop_mode,
+        )
         return x, aux_dict, top_k_indices
 
 

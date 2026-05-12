@@ -8,7 +8,7 @@ from torch.nn.modules.transformer import _get_clones
 
 from lib.models.layers.head import build_box_head
 from lib.models.sstrack.vit import vit_base_patch16_224
-from lib.models.sstrack.vit_ce import vit_base_patch16_224_ce
+from lib.models.sstrack.vit_ce import VisionTransformerCE, vit_base_patch16_224_ce
 from lib.utils.box_ops import box_xyxy_to_cxcywh
 
 from timm.models.layers import Mlp
@@ -376,46 +376,77 @@ class SSTrack(nn.Module):
         else:
             raise ValueError("Unknown PROMPT_TYPE")
 
+    def _backbone_template_drop_kw(self, template_drop_rate, template_drop_mode="null"):
+        if isinstance(self.backbone, VisionTransformerCE):
+            return {
+                "template_drop_rate": template_drop_rate,
+                "template_drop_mode": template_drop_mode,
+            }
+        return {}
+
     def forward(self, template: torch.Tensor,
                 search: torch.Tensor,
                 ce_template_mask=None,
                 ce_keep_rate=None,
                 return_last_attn=False,
+                cvtp_template_drop_rate=None,
                 ):
         assert isinstance(search, list), "The type of search is not List"
 
+        if self.training:
+            track_query = None
+        else:
+            track_query = self.track_query
+
+        cvtp_cfg = getattr(self.cfg.MODEL, "CVTP", None)
+        cvtp_on = self.training and cvtp_cfg is not None and bool(getattr(cvtp_cfg, "ENABLE", False))
+        _cvtp_rate = float(cvtp_template_drop_rate) if cvtp_template_drop_rate is not None else 0.0
+        cvtp_drop = _cvtp_rate if cvtp_on else 0.0
+
         out_dict = []
-        for i in range(self.num_searches-1, len(search)):
+        for i in range(self.num_searches-1, len(search)): # self.num_searches = 2 = DATA.SEARCH.LENGTH  len(search) = DATA.SEARCH.NUMBER。这里表示dataloader取了3帧，这里可以滑动两次，每次取2帧。 i表示的是当前最后帧的索引。
+            use_cvtp_drop = cvtp_on and (track_query is not None)
+            cur_drop = cvtp_drop if use_cvtp_drop else 0.0
             # search的提取做了修改，以获取list形式的search
-            x_, aux_dict, top_k_indices = self.backbone(z=template.copy(), x=[search[idx] for idx in range(i-self.num_searches+1, i+1)],
-                                        ce_template_mask=ce_template_mask, ce_keep_rate=ce_keep_rate,
-                                        return_last_attn=return_last_attn, track_query=self.track_query, token_len=self.token_len)
+            # 返回的x_大致为 cls_token + 模板tokens + 搜索tokens
+            # self.feat_len_s = 576
+            x_, aux_dict, top_k_indices = self.backbone(
+                z=template.copy(),
+                x=[search[idx] for idx in range(i - self.num_searches + 1, i + 1)],
+                ce_template_mask=ce_template_mask,
+                ce_keep_rate=ce_keep_rate,
+                return_last_attn=return_last_attn,
+                track_query=track_query,
+                token_len=self.token_len,
+                **self._backbone_template_drop_kw(cur_drop, "null"),
+            )
             # search部分只保留最后一个search的特征图
-            x = torch.cat((x_[:, :-1*self.num_searches*self.feat_len_s, :],x_[:,-self.feat_len_s:,:]), dim=1)
-            
-            feat_last = x   # x.shape torch.Size([8, 1009, 768])
+            x = torch.cat((x_[:, :-1 * self.num_searches * self.feat_len_s, :], x_[:, -self.feat_len_s:, :]), dim=1)
+
+            feat_last = x   # x.shape torch.Size([Bs, 1009, 768]); 1009 = 1 + 3*144 + 576
             if isinstance(x, list):
                 feat_last = x[-1]
-                
-            enc_opt = feat_last[:, -self.feat_len_s:]  # encoder output for the search region (B, HW, C)    # enc_opt.shape torch.Size([8, 576, 768])
+
+            enc_opt = feat_last[:, -self.feat_len_s:]  # encoder output for the search region (B, HW, 576)    # enc_opt.shape torch.Size([Bs, 576, 768])
             if self.backbone.add_cls_token:
-                t_query = (x[:, :self.token_len]) # (B, N, C)  # self.track_query.shape torch.Size([8, 1, 768])
-                z_query = (x[:, self.token_len:-self.feat_len_s])
-                self.track_query = self.prompt(t_query, z_query).clone().detach()
-                # self.track_query = nn.Parameter(torch.randn(t_query.shape)).to(t_query.device)
-                # self.track_query = t_query
-                
+                t_query = x[:, :self.token_len]
+                z_query = x[:, self.token_len:-self.feat_len_s]
+                track_query = self.prompt(t_query, z_query)
+
             att = torch.matmul(enc_opt, x[:, :1].transpose(1, 2))  # (B, HW, N)
             opt = (enc_opt.unsqueeze(-1) * att.unsqueeze(-2)).permute((0, 3, 2, 1)).contiguous()  # (B, HW, C, N) --> (B, N, C, HW)
-            
+
             # Forward head
             out = self.forward_head(opt, None)
 
             out.update(aux_dict)
             out['backbone_feat'] = x
-            
+
             out_dict.append(out)
-            
+
+        if not self.training:
+            self.track_query = track_query
+
         return out_dict
 
     def forward_head(self, opt, gt_score_map=None):

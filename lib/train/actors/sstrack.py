@@ -4,7 +4,7 @@ from lib.utils.box_ops import box_cxcywh_to_xyxy, box_xywh_to_xyxy
 import torch
 from lib.utils.merge import merge_template_search
 from ...utils.heapmap_utils import generate_heatmap
-from ...utils.ce_utils import generate_mask_cond, adjust_keep_rate
+from ...utils.ce_utils import generate_mask_cond, adjust_keep_rate, adjust_cvtp_template_drop_rate
 
 
 class SSTrackActor(BaseActor):
@@ -63,6 +63,15 @@ class SSTrackActor(BaseActor):
                                                 ITERS_PER_EPOCH=1,
                                                 base_keep_rate=self.cfg.MODEL.BACKBONE.CE_KEEP_RATIO[0])
 
+        cvtp_template_drop_rate = None
+        cvtp_cfg = getattr(self.cfg.MODEL, "CVTP", None)
+        if cvtp_cfg is not None and getattr(cvtp_cfg, "ENABLE", False):
+            max_drop = float(getattr(cvtp_cfg, "TEMPLATE_DROP_RATE", 0.0))
+            cvtp_start = int(getattr(self.cfg.TRAIN, "CVTP_START_EPOCH", 1))
+            cvtp_warm = int(getattr(self.cfg.TRAIN, "CVTP_WARM_EPOCH", 50))
+            cvtp_template_drop_rate = adjust_cvtp_template_drop_rate(
+                data["epoch"], cvtp_start, cvtp_warm, max_drop)
+
         # if len(template_list) == 1:
         #     template_list = template_list[0]
 
@@ -70,7 +79,8 @@ class SSTrackActor(BaseActor):
                             search=search_list,
                             ce_template_mask=box_mask_z,
                             ce_keep_rate=ce_keep_rate,
-                            return_last_attn=False)
+                            return_last_attn=False,
+                            cvtp_template_drop_rate=cvtp_template_drop_rate)
 
         return out_dict
 

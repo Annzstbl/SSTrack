@@ -37,6 +37,10 @@ cfg.MODEL.HEAD = edict()
 cfg.MODEL.HEAD.TYPE = "CENTER"
 cfg.MODEL.HEAD.NUM_CHANNELS = 256
 
+#CVTP
+cfg.MODEL.CVTP = edict()
+cfg.MODEL.CVTP.ENABLE = False
+cfg.MODEL.CVTP.TEMPLATE_DROP_RATE = 0.0
 
 # TRAIN
 cfg.TRAIN = edict()
@@ -60,6 +64,10 @@ cfg.TRAIN.BBOX_TASK = False
 cfg.TRAIN.CE_START_EPOCH = 20  # candidate elimination start epoch
 cfg.TRAIN.CE_WARM_EPOCH = 80  # candidate elimination warm up epoch
 cfg.TRAIN.DROP_PATH_RATE = 0.1  # drop path rate for ViT backbone
+
+# CVTP template-drop schedule (used in SSTrackActor; see lib.utils.ce_utils.adjust_cvtp_template_drop_rate)
+cfg.TRAIN.CVTP_START_EPOCH = 1  # first epoch where drop rate starts ramping from 0
+cfg.TRAIN.CVTP_WARM_EPOCH = 50  # linear ramp epochs until TEMPLATE_DROP_RATE is reached
 
 # TRAIN.SCHEDULER
 cfg.TRAIN.SCHEDULER = edict()

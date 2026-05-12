@@ -34,3 +34,21 @@ CUDA_VISIBLE_DEVICES=3 nohup python -u tracking/train.py \
   --save_dir /data4/litianhao/must2 \
   --mode single \
   > logs/baseline_must_trans_enc_cope_cvtp.log 2>&1 &
+
+
+  # 197
+mkdir logs
+CUDA_VISIBLE_DEVICES=0,1,2 nohup python -u tracking/train.py \
+  --script sstrack \
+  --config baseline_must_trans_enc_cope_cvtp \
+  --save_dir /data4/litianhao/must2 \
+  --mode multiple \
+  --nproc_per_node 3 \
+  > logs/baseline_must_trans_enc_cope_cvtp.log 2>&1 &
+
+  CUDA_VISIBLE_DEVICES=0,1,2 python -u tracking/train.py \
+  --script sstrack \
+  --config baseline_must_trans_enc_cope_cvtp \
+  --save_dir /data4/litianhao/must2 \
+  --mode multiple \
+  --nproc_per_node 3 

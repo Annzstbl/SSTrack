@@ -1,0 +1,21 @@
+PyYAML
+easydict
+cython
+opencv-python
+pandas
+tqdm
+pycocotools
+jpeg4py
+tb-nightly
+tikzplotlib
+# thop-0.0.31.post2005241907
+colorama
+lmdb
+scipy
+setuptools==60.2.0
+# visdom
+# tensorboardX
+wandb
+timm
+einops
+numpy<2

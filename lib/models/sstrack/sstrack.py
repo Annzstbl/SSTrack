@@ -1,6 +1,6 @@
 import math
 import os
-from typing import List
+from typing import List, NamedTuple
 
 import torch
 from torch import nn
@@ -12,6 +12,14 @@ from lib.models.sstrack.vit_ce import VisionTransformerCE, vit_base_patch16_224_
 from lib.utils.box_ops import box_xyxy_to_cxcywh
 
 from timm.models.layers import Mlp
+
+
+class _CVTPRuntime(NamedTuple):
+    """一次 forward 内 CVTP（模板 token drop）的配置快照。"""
+    enabled: bool  # cfg 打开且 self.training
+    drop_rate: float  # 传入的丢弃率；未启用时为 0
+    strategy: str
+    hard_ratio: float
 
 
 class ATTFu(nn.Module):
@@ -247,6 +255,7 @@ class ATTFu_TransformerEncoder(nn.Module):
             nn.GELU(),
             nn.Dropout(0.1)
         )
+        self.final_norm = nn.LayerNorm(channels)
         
     def forward(self, l_pro, l_tem):
         """
@@ -272,23 +281,26 @@ class ATTFu_TransformerEncoder(nn.Module):
         seq = torch.cat([l_pro, l_tem], dim=1)  # (B, 1+N, 768)
         seq_len = seq.shape[1]
         
+
+        assert seq_len == self.pos_embed.shape[1], "seq_len must be equal to pos_embed.shape[1]"
+
         # 2. 添加位置编码（动态适配序列长度）
         if seq_len == self.pos_embed.shape[1]:
             # 长度匹配，直接使用
             pos_embed = self.pos_embed
-        elif seq_len < self.pos_embed.shape[1]:
-            # 测试时序列更短，截取前seq_len个位置编码
-            pos_embed = self.pos_embed[:, :seq_len, :]
-            # # 测试时序列更短，截取后seq_len个位置编码
-            # pos_embed = self.pos_embed[:, -seq_len:, :]
-        else:
-            # 序列更长，使用插值扩展（虽然理论上不应该发生）
-            pos_embed = torch.nn.functional.interpolate(
-                self.pos_embed.transpose(1, 2), 
-                size=seq_len, 
-                mode='linear', 
-                align_corners=False
-            ).transpose(1, 2)
+        # elif seq_len < self.pos_embed.shape[1]:
+        #     # 测试时序列更短，截取前seq_len个位置编码
+        #     pos_embed = self.pos_embed[:, :seq_len, :]
+        #     # # 测试时序列更短，截取后seq_len个位置编码
+        #     # pos_embed = self.pos_embed[:, -seq_len:, :]
+        # else:
+        #     # 序列更长，使用插值扩展（虽然理论上不应该发生）
+        #     pos_embed = torch.nn.functional.interpolate(
+        #         self.pos_embed.transpose(1, 2), 
+        #         size=seq_len, 
+        #         mode='linear', 
+        #         align_corners=False
+        #     ).transpose(1, 2)
         
         seq = seq + pos_embed
         
@@ -301,6 +313,9 @@ class ATTFu_TransformerEncoder(nn.Module):
         
         # 5. 输出投影
         out = self.output_proj(l_pro_updated)
+
+        # 6. 残差连接 + 层归一化
+        out = self.final_norm(out + l_pro_updated)
         
         return out
 
@@ -394,6 +409,18 @@ class SSTrack(nn.Module):
             }
         return {}
 
+    def _cvtp_runtime(self, cvtp_template_drop_rate=None) -> _CVTPRuntime:
+        """解析 MODEL.CVTP：仅在训练且 ENABLE 时启用；推理或未配置时返回 enabled=False、drop_rate=0。"""
+        cvtp_cfg = getattr(self.cfg.MODEL, "CVTP", None)
+        enabled = self.training and cvtp_cfg is not None and bool(getattr(cvtp_cfg, "ENABLE", False))
+        rate = float(cvtp_template_drop_rate) if cvtp_template_drop_rate is not None else 0.0
+        return _CVTPRuntime(
+            enabled=enabled,
+            drop_rate=rate if enabled else 0.0,
+            strategy=str(getattr(cvtp_cfg, "DROP_STRATEGY", "random")) if cvtp_cfg is not None else "random",
+            hard_ratio=float(getattr(cvtp_cfg, "HARD_RATIO", 0.5)) if cvtp_cfg is not None else 0.5,
+        )
+
     def forward(self, template: torch.Tensor,
                 search: torch.Tensor,
                 ce_template_mask=None,
@@ -408,17 +435,12 @@ class SSTrack(nn.Module):
         else:
             track_query = self.track_query
 
-        cvtp_cfg = getattr(self.cfg.MODEL, "CVTP", None)
-        cvtp_on = self.training and cvtp_cfg is not None and bool(getattr(cvtp_cfg, "ENABLE", False))
-        _cvtp_rate = float(cvtp_template_drop_rate) if cvtp_template_drop_rate is not None else 0.0
-        cvtp_drop = _cvtp_rate if cvtp_on else 0.0
-        cvtp_strategy = str(getattr(cvtp_cfg, "DROP_STRATEGY", "random")) if cvtp_cfg is not None else "random"
-        cvtp_hard_ratio = float(getattr(cvtp_cfg, "HARD_RATIO", 0.5)) if cvtp_cfg is not None else 0.5
+        cvtp = self._cvtp_runtime(cvtp_template_drop_rate)
 
         out_dict = []
         for i in range(self.num_searches-1, len(search)): # self.num_searches = 2 = DATA.SEARCH.LENGTH  len(search) = DATA.SEARCH.NUMBER。这里表示dataloader取了3帧，这里可以滑动两次，每次取2帧。 i表示的是当前最后帧的索引。
-            use_cvtp_drop = cvtp_on and (track_query is not None)
-            cur_drop = cvtp_drop if use_cvtp_drop else 0.0
+            use_cvtp_drop = cvtp.enabled and (track_query is not None)
+            cur_drop = cvtp.drop_rate if use_cvtp_drop else 0.0
             drop_query = track_query if use_cvtp_drop else None
             # search的提取做了修改，以获取list形式的search
             # 返回的x_大致为 cls_token + 模板tokens + 搜索tokens
@@ -434,9 +456,9 @@ class SSTrack(nn.Module):
                 **self._backbone_template_drop_kw(
                     cur_drop,
                     "null",
-                    template_drop_strategy=cvtp_strategy,
+                    template_drop_strategy=cvtp.strategy,
                     template_drop_query=drop_query,
-                    template_hard_ratio=cvtp_hard_ratio,
+                    template_hard_ratio=cvtp.hard_ratio,
                 ),
             )
             # search部分只保留最后一个search的特征图
@@ -450,11 +472,13 @@ class SSTrack(nn.Module):
             if self.backbone.add_cls_token:
                 t_query = x[:, :self.token_len]
                 z_query = x[:, self.token_len:-self.feat_len_s]
-                track_query = self.prompt(t_query, z_query)
+                track_query = self.prompt(t_query.detach(), z_query.detach()) #只训练self.prompt
 
             att = torch.matmul(enc_opt, x[:, :1].transpose(1, 2))  # (B, HW, N)
             opt = (enc_opt.unsqueeze(-1) * att.unsqueeze(-2)).permute((0, 3, 2, 1)).contiguous()  # (B, HW, C, N) --> (B, N, C, HW)
 
+            print((int((enc_opt.abs().amax(dim=-1) < 1e-6).sum().item()), int(enc_opt.shape[1])))
+            
             # Forward head
             out = self.forward_head(opt, None)
 

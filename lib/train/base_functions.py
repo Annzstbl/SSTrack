@@ -3,6 +3,7 @@ import torch
 from torch.utils.data.distributed import DistributedSampler
 # datasets related
 from lib.train.dataset import HSITrack, MUSTHSI
+from lib.train.dataset.musthsi import musthsi_names_to_seq_ids
 from lib.train.data import sampler, opencv_loader, processing, LTRLoader, hsijpg_loader, hotjpg_loader
 import lib.train.data.transforms as tfm
 from lib.utils.misc import is_main_process
@@ -24,7 +25,7 @@ def update_settings(settings, cfg):
     settings.scheduler_type = cfg.TRAIN.SCHEDULER.TYPE
 
 
-def names2datasets(name_list: list, settings, image_loader):
+def names2datasets(name_list: list, settings, image_loader, data_cfg=None):
     assert isinstance(name_list, list)
     datasets = []
     for name in name_list:
@@ -33,7 +34,17 @@ def names2datasets(name_list: list, settings, image_loader):
                         ]
         # Tracking Task
         if name == "MUSTHSI":
-            datasets.append(MUSTHSI(settings.env.musthsi_dir, split='train', image_loader=hsijpg_loader))
+            kw = {}
+            if data_cfg is not None:
+                m_names = getattr(data_cfg, "MUSTHSI_SEQUENCE_NAMES", None)
+                m_ids = getattr(data_cfg, "MUSTHSI_SEQ_IDS", None)
+                if m_names:
+                    kw["seq_ids"] = musthsi_names_to_seq_ids(
+                        settings.env.musthsi_dir, "train", list(m_names)
+                    )
+                elif m_ids is not None and len(m_ids) > 0:
+                    kw["seq_ids"] = list(m_ids)
+            datasets.append(MUSTHSI(settings.env.musthsi_dir, split='train', image_loader=hsijpg_loader, **kw))
         if name == "HSITrack":
             datasets.append(HSITrack(settings.env.hsitrack_dir, split='train', image_loader=hsijpg_loader))
         if name == "HOT":
@@ -103,7 +114,7 @@ def build_dataloaders(cfg, settings):
     sampler_mode = getattr(cfg.DATA, "SAMPLER_MODE", "causal")
     train_cls = getattr(cfg.TRAIN, "TRAIN_CLS", False)
     print("sampler_mode: ", sampler_mode)
-    dataset_train = sampler.TrackingSampler(datasets=names2datasets(cfg.DATA.TRAIN.DATASETS_NAME, settings, opencv_loader),
+    dataset_train = sampler.TrackingSampler(datasets=names2datasets(cfg.DATA.TRAIN.DATASETS_NAME, settings, opencv_loader, cfg.DATA.TRAIN),
                                             p_datasets=cfg.DATA.TRAIN.DATASETS_RATIO,
                                             samples_per_epoch=cfg.DATA.TRAIN.SAMPLE_PER_EPOCH,
                                             max_gap=cfg.DATA.MAX_SAMPLE_INTERVAL, num_search_frames=settings.num_search,
@@ -118,7 +129,7 @@ def build_dataloaders(cfg, settings):
                              num_workers=cfg.TRAIN.NUM_WORKER, drop_last=True, stack_dim=1, sampler=train_sampler)
 
     # Validation samplers and loaders
-    dataset_val = sampler.TrackingSampler(datasets=names2datasets(cfg.DATA.VAL.DATASETS_NAME, settings, opencv_loader),
+    dataset_val = sampler.TrackingSampler(datasets=names2datasets(cfg.DATA.VAL.DATASETS_NAME, settings, opencv_loader, cfg.DATA.VAL),
                                           p_datasets=cfg.DATA.VAL.DATASETS_RATIO,
                                           samples_per_epoch=cfg.DATA.VAL.SAMPLE_PER_EPOCH,
                                           max_gap=cfg.DATA.MAX_SAMPLE_INTERVAL, num_search_frames=settings.num_search,

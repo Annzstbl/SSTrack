@@ -49,6 +49,33 @@ class SSTrack(BaseTracker):
         
         self.num_searches = self.cfg.DATA.SEARCH.LENGTH
 
+    def _target_template_count(self):
+        """与训练 DATA.TEMPLATE.NUMBER 对齐；未配置时退回 TEST.TEMPLATE_NUMBER。"""
+        return int(getattr(self.cfg.DATA.TEMPLATE, 'NUMBER', self.cfg.TEST.TEMPLATE_NUMBER))
+
+    @staticmethod
+    def _repeat_pad_templates(templates, target_count):
+        """张数不足时在末尾复制最后一帧，凑满 target_count。"""
+        if not templates or target_count <= 0:
+            return list(templates)
+        out = list(templates)
+        while len(out) < target_count:
+            out.append(out[-1].clone())
+        return out
+
+    def _normalize_template_list(self, templates, target_count):
+        """多则沿序号均匀抽样，少则复制补齐，使推理模板数与训练一致。"""
+        if not templates or target_count <= 0:
+            return list(templates)
+        if len(templates) == target_count:
+            return list(templates)
+        if len(templates) > target_count:
+            L = len(templates)
+            pos = np.linspace(0, L - 1, target_count)
+            indices = np.clip(np.round(pos).astype(np.int64), 0, L - 1)
+            return [templates[int(i)].clone() for i in indices]
+        return self._repeat_pad_templates(templates, target_count)
+
     def initialize(self, image, info: dict):
         # forward the template once
         z_patch_arr, resize_factor, z_amask_arr = sample_target(image, info['init_bbox'], self.params.template_factor,
@@ -86,13 +113,15 @@ class SSTrack(BaseTracker):
 
         # --------- select memory frames ---------
         box_mask_z = None
+        tgt_n = self._target_template_count()
         if self.frame_id <= self.cfg.TEST.TEMPLATE_NUMBER:
-            template_list = self.memory_frames.copy()
+            template_list = self._repeat_pad_templates(self.memory_frames.copy(), tgt_n)
             if self.cfg.MODEL.BACKBONE.CE_LOC:  # use CE module
                 # box_mask_z = torch.cat(self.memory_masks, dim=1)
                 box_mask_z = None
         else:
             template_list, box_mask_z = self.select_memory_frames()
+            template_list = self._normalize_template_list(template_list, tgt_n)
         # --------- select memory frames ---------
 
         with torch.no_grad():
@@ -142,12 +171,23 @@ class SSTrack(BaseTracker):
                 download = True
                 if download:
                     seq_name = '10'
-                    save_dir = '/data/users/fengtao/SSTrack/output/test/tracking_results/vis_must'
+                    save_dir = '/data/users/qinhaolin01/SSTrack-fengtao/debug'
                     save_path = os.path.join(save_dir, seq_name)
                     if not os.path.exists(save_path):
                         os.makedirs(save_path)
                     
                 self.visdom.register(torch.from_numpy(x_patch_arr[:,:,[4,2,1]]).permute(2, 0, 1), 'image', 1, 'search_region')
+                # 当前帧整图 + 本帧跟踪结果框 (x,y,w,h)，与 self.state 一致（map_box_back 后全图坐标）
+                if image.shape[2] >= 5:
+                    frame_vis = np.ascontiguousarray(image[:, :, [4, 2, 1]])
+                else:
+                    frame_vis = np.ascontiguousarray(image[:, :, :3])
+                if frame_vis.dtype != np.uint8:
+                    frame_vis = np.clip(frame_vis, 0, 255).astype(np.uint8)
+                _boxes = [torch.tensor(self.state, dtype=torch.float32).flatten()]
+                if info is not None and info.get('gt_bbox') is not None:
+                    _boxes.append(torch.tensor(info['gt_bbox'], dtype=torch.float32).flatten())
+                self.visdom.register((frame_vis, *_boxes), 'Tracking', 1, 'tracking_result')
                 if download:
                     save_name = os.path.join(save_path, "%04d_search.jpg" % self.frame_id)
                     cv2.imwrite(save_name, x_patch_arr[:,:,[4,2,1]])

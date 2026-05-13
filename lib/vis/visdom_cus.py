@@ -399,9 +399,10 @@ class VisTracking(VisBase):
 
 
 class VisBBReg(VisBase):
-    def __init__(self, visdom, show_data, title):
+    def __init__(self, visdom, show_data, title, visdom_wrapper=None):
         super().__init__(visdom, show_data, title)
         self.block_list = []
+        self._visdom_wrapper = visdom_wrapper
 
     def block_list_callback_handler(self, data):
         self.block_list[data['propertyId']]['value'] = data['value']
@@ -430,6 +431,9 @@ class VisBBReg(VisBase):
 
         self.visdom.image(init_box_image, opts={'title': 'Init Boxes'}, win='Init Boxes')
         self.visdom.image(final_box_image, opts={'title': 'Final Boxes'}, win='Final Boxes')
+        if self._visdom_wrapper is not None:
+            self._visdom_wrapper.register_keyboard_win('Init Boxes')
+            self._visdom_wrapper.register_keyboard_win('Final Boxes')
 
 
 class Visdom:
@@ -447,8 +451,18 @@ class Visdom:
         self.visdom.properties(self.blocks_list, opts={'title': 'Block List'}, win='block_list')
         self.visdom.register_event_handler(self.block_list_callback_handler, 'block_list')
 
-        if ui_info is not None:
-            self.visdom.register_event_handler(ui_info['handler'], ui_info['win_id'])
+        # 由 register() 为每个数据窗口自动挂键盘回调；不挂 block_list，避免与勾选框冲突
+        self._ui_info = ui_info
+        self._key_registered_wins = set()
+
+    def register_keyboard_win(self, win_title):
+        """给任意 win 挂与 Tracker 相同的键盘回调（供 VisBBReg 等子模块额外窗口使用）。"""
+        if self._ui_info is None or win_title == 'block_list':
+            return
+        if win_title in self._key_registered_wins:
+            return
+        self.visdom.register_event_handler(self._ui_info['handler'], win_title)
+        self._key_registered_wins.add(win_title)
 
     def block_list_callback_handler(self, data):
         field_name = self.blocks_list[data['propertyId']]['name']
@@ -461,6 +475,10 @@ class Visdom:
 
     def register(self, data, mode, debug_level=0, title='Data', **kwargs):
         if title not in self.registered_blocks.keys():
+            if self._ui_info is not None and title != 'block_list' and title not in self._key_registered_wins:
+                self.visdom.register_event_handler(self._ui_info['handler'], title)
+                self._key_registered_wins.add(title)
+
             show_data = self.debug >= debug_level
 
             if title != 'Tracking':
@@ -488,7 +506,8 @@ class Visdom:
             elif mode == 'Tracking':
                 self.registered_blocks[title] = VisTracking(self.visdom, show_data, title)
             elif mode == 'bbreg':
-                self.registered_blocks[title] = VisBBReg(self.visdom, show_data, title)
+                self.registered_blocks[title] = VisBBReg(
+                    self.visdom, show_data, title, visdom_wrapper=self)
             elif mode == 'featmap':
                 self.registered_blocks[title] = VisFeaturemap(self.visdom, show_data, title)
             else:

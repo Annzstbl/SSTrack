@@ -95,7 +95,7 @@ TRAIN:
   CE_START_EPOCH: 10
   CE_WARM_EPOCH: 25
 
-  CVTP_START_EPOCH: 35
+  CVTP_START_EPOCH: 1000 #不开启
   CVTP_WARM_EPOCH: 15
 
 TEST:
@@ -106,3 +106,6 @@ TEST:
   TEMPLATE_SIZE: 192
   TEMPLATE_NUMBER: 3 #更改为真实需要的数量
   MEMORY_THRESHOLD: 1000
+
+
+# 这是在梯度回传时，只训练self.prompt，不训练其他模块的第二次训练

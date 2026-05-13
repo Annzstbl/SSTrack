@@ -37,10 +37,10 @@ DATA:
     - MUSTHSI
     DATASETS_RATIO:
     - 1
-    SAMPLE_PER_EPOCH: 8000
+    SAMPLE_PER_EPOCH: 200
     # 仅训练指定序列（与 train/list.txt 中目录名一致）；留空则使用全部序列
-    # MUSTHSI_SEQUENCE_NAMES:
-    #   - BC-Bicycle-002
+    MUSTHSI_SEQUENCE_NAMES:
+      - POC-Car-001
     # MUSTHSI_SEQ_IDS: []
 
   VAL:
@@ -48,9 +48,9 @@ DATA:
     - MUSTHSI
     DATASETS_RATIO:
     - 1
-    SAMPLE_PER_EPOCH: 2000
-    # MUSTHSI_SEQUENCE_NAMES:
-    #   - BC-Bicycle-002
+    SAMPLE_PER_EPOCH: 10
+    MUSTHSI_SEQUENCE_NAMES:
+      - POC-Car-001
 MODEL:
   # PRETRAIN_FILE: "mae_pretrain_vit_base.pth"
   PRETRAIN_FILE: "mae_pretrain_vit_base_cope.pth"

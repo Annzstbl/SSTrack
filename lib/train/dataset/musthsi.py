@@ -11,6 +11,28 @@ from lib.train.data import hsijpg_loader
 from lib.train.admin import env_settings
 
 
+def _read_musthsi_list(root, split):
+    root = os.path.join(root, split)
+    with open(os.path.join(root, 'list.txt')) as f:
+        return [row[0] for row in csv.reader(f)]
+
+
+def musthsi_names_to_seq_ids(root, split, sequence_names):
+    """将 list.txt 中的序列目录名转为 seq_ids（传给 MUSTHSI(seq_ids=...)）。"""
+    if not sequence_names:
+        return None
+    dir_list = _read_musthsi_list(root, split)
+    out = []
+    for n in sequence_names:
+        if n not in dir_list:
+            raise ValueError(
+                "MUSTHSI sequence '%s' not in %s/list.txt (available e.g. %s)"
+                % (n, os.path.join(root, split), dir_list[:5])
+            )
+        out.append(dir_list.index(n))
+    return out
+
+
 class MUSTHSI(BaseVideoDataset):
     def __init__(self, root=None, image_loader=hsijpg_loader, split=None, seq_ids=None, data_fraction=None):
         """

@@ -38,19 +38,13 @@ DATA:
     DATASETS_RATIO:
     - 1
     SAMPLE_PER_EPOCH: 8000
-    # 仅训练指定序列（与 train/list.txt 中目录名一致）；留空则使用全部序列
-    # MUSTHSI_SEQUENCE_NAMES:
-    #   - BC-Bicycle-002
-    # MUSTHSI_SEQ_IDS: []
-
+  
   VAL:
     DATASETS_NAME:
     - MUSTHSI
     DATASETS_RATIO:
     - 1
     SAMPLE_PER_EPOCH: 2000
-    # MUSTHSI_SEQUENCE_NAMES:
-    #   - BC-Bicycle-002
 MODEL:
   # PRETRAIN_FILE: "mae_pretrain_vit_base.pth"
   PRETRAIN_FILE: "mae_pretrain_vit_base_cope.pth"
@@ -71,6 +65,9 @@ MODEL:
   CVTP:
     ENABLE: True
     TEMPLATE_DROP_RATE: 0.1
+    DROP_STRATEGY: hard   # random | hard | easy | mixed
+    HARD_RATIO: 0.5
+
 
 TRAIN:
   BBOX_TASK: True
@@ -104,5 +101,5 @@ TEST:
   SEARCH_SIZE: 384
   TEMPLATE_FACTOR: 2.0
   TEMPLATE_SIZE: 192
-  TEMPLATE_NUMBER: 3 #更改为真实需要的数量
+  TEMPLATE_NUMBER: 2
   MEMORY_THRESHOLD: 1000

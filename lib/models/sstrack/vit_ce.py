@@ -217,16 +217,12 @@ class VisionTransformerCE(VisionTransformer):
                 query = new_query if track_query is None else track_query + new_query
             query = query + self.cls_pos_embed
         
-        z = z + self.pos_embed_z
-        x = x + self.pos_embed_x
+        z = self._apply_template_position_embed(z, B, T_z)
+        x = self._apply_search_position_embed(x, num_searches)
 
         if self.add_sep_seg:
             x = x + self.search_segment_pos_embed
             z = z + self.template_segment_pos_embed
-
-        if T_z > 1:  # multiple memory frames
-            z = z.view(B, T_z, -1, z.size()[-1]).contiguous()
-            z = z.flatten(1, 2)
 
         lens_z = z.shape[1]  # HW
         lens_x = x.shape[1]  # HW
@@ -302,6 +298,7 @@ class VisionTransformerCE(VisionTransformer):
                 template_drop_strategy="random",
                 template_drop_query=None,
                 template_hard_ratio=0.5):
+        assert token_type == "concat", "token_type must be concat"                
         x, aux_dict, top_k_indices = self.forward_features(
             z, x, ce_template_mask=ce_template_mask, ce_keep_rate=ce_keep_rate,
             track_query=track_query, token_type=token_type, token_len=token_len,

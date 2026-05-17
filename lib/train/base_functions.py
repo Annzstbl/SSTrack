@@ -29,22 +29,23 @@ def names2datasets(name_list: list, settings, image_loader, data_cfg=None):
     assert isinstance(name_list, list)
     datasets = []
     for name in name_list:
-        assert name in ["MUSTHSI", "HSITrack", "HOT",
+        assert name in ["MUSTHSI", "MUSTHSI_TEST", "HSITrack", "HOT",
                         "GOT10K_vottrain", "GOT10K_votval", "GOT10K_train_full", "GOT10K_official_val"
                         ]
         # Tracking Task
-        if name == "MUSTHSI":
+        if name in ("MUSTHSI", "MUSTHSI_TEST"):
+            split = "test" if name == "MUSTHSI_TEST" else "train"
             kw = {}
             if data_cfg is not None:
                 m_names = getattr(data_cfg, "MUSTHSI_SEQUENCE_NAMES", None)
                 m_ids = getattr(data_cfg, "MUSTHSI_SEQ_IDS", None)
                 if m_names:
                     kw["seq_ids"] = musthsi_names_to_seq_ids(
-                        settings.env.musthsi_dir, "train", list(m_names)
+                        settings.env.musthsi_dir, split, list(m_names)
                     )
                 elif m_ids is not None and len(m_ids) > 0:
                     kw["seq_ids"] = list(m_ids)
-            datasets.append(MUSTHSI(settings.env.musthsi_dir, split='train', image_loader=hsijpg_loader, **kw))
+            datasets.append(MUSTHSI(settings.env.musthsi_dir, split=split, image_loader=hsijpg_loader, **kw))
         if name == "HSITrack":
             datasets.append(HSITrack(settings.env.hsitrack_dir, split='train', image_loader=hsijpg_loader))
         if name == "HOT":

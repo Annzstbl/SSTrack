@@ -94,3 +94,19 @@ CUDA_VISIBLE_DEVICES=3 nohup python -u tracking/train.py \
 --save_dir /data4/litianhao/must2 \
 --mode single \
 > logs/baseline_must_trans_enc_cope_cvtp_2.log 2>&1 &
+
+
+# cvpt3
+CUDA_VISIBLE_DEVICES=3 nohup python -u tracking/train.py \
+--script sstrack \
+--config baseline_must_trans_enc_cope_cvtp_3 \
+--save_dir /data4/litianhao/must2 \
+--mode single \
+> logs/baseline_must_trans_enc_cope_cvtp_3.log 2>&1 &
+
+推理和评测
+CUDA_VISIBLE_DEVICES=3 python tracking/test.py sstrack baseline_must_trans_enc_cope_cvtp_3 --dataset MUSTHSI --save_dir /data4/litianhao/must2 --threads 4 && python tracking/analysis_results.py --tracker_param baseline_must_trans_enc_cope_cvtp_3
+
+MUSTHSI                                          | AUC        | OP50       | OP75       | Precision    | Norm Precision    |
+sstrack_baseline_must_trans_enc_cope_cvtp_3      | 48.98      | 60.33      | 38.28      | 63.73        | 60.51             |
+

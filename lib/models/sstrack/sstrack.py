@@ -362,7 +362,7 @@ class SSTrack(nn.Module):
         if self.aux_loss:
             self.box_head = _get_clones(self.box_head, 6)
         
-        # track query: save the history information of the previous frame
+        # track query: temporal state for test/tracking (see reset_track_query)
         self.track_query = None
         self.token_len = token_len
         self.num_searches = num_searches
@@ -409,6 +409,10 @@ class SSTrack(nn.Module):
             }
         return {}
 
+    def reset_track_query(self):
+        """Clear temporal track query (new sequence / new training-val batch)."""
+        self.track_query = None
+
     def _cvtp_runtime(self, cvtp_template_drop_rate=None) -> _CVTPRuntime:
         """解析 MODEL.CVTP：仅在训练且 ENABLE 时启用；推理或未配置时返回 enabled=False、drop_rate=0。"""
         cvtp_cfg = getattr(self.cfg.MODEL, "CVTP", None)
@@ -430,10 +434,7 @@ class SSTrack(nn.Module):
                 ):
         assert isinstance(search, list), "The type of search is not List"
 
-        if self.training:
-            track_query = None
-        else:
-            track_query = self.track_query
+        track_query = self.track_query
 
         cvtp = self._cvtp_runtime(cvtp_template_drop_rate)
 
@@ -460,6 +461,7 @@ class SSTrack(nn.Module):
                     template_drop_query=drop_query,
                     template_hard_ratio=cvtp.hard_ratio,
                 ),
+                token_type="concat"
             )
             # search部分只保留最后一个search的特征图
             x = torch.cat((x_[:, :-1 * self.num_searches * self.feat_len_s, :], x_[:, -self.feat_len_s:, :]), dim=1)
@@ -477,7 +479,7 @@ class SSTrack(nn.Module):
             att = torch.matmul(enc_opt, x[:, :1].transpose(1, 2))  # (B, HW, N)
             opt = (enc_opt.unsqueeze(-1) * att.unsqueeze(-2)).permute((0, 3, 2, 1)).contiguous()  # (B, HW, C, N) --> (B, N, C, HW)
 
-            print((int((enc_opt.abs().amax(dim=-1) < 1e-6).sum().item()), int(enc_opt.shape[1])))
+            # print((int((enc_opt.abs().amax(dim=-1) < 1e-6).sum().item()), int(enc_opt.shape[1])))
             
             # Forward head
             out = self.forward_head(opt, None)

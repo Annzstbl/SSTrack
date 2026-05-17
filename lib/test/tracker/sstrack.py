@@ -21,6 +21,7 @@ class SSTrack(BaseTracker):
         super(SSTrack, self).__init__(params)
         network = build_sstrack(params.cfg, training=False)
         network.load_state_dict(torch.load(self.params.checkpoint, map_location='cpu')['net'], strict=True)
+        print(f"load checkpoint from {self.params.checkpoint}")
         self.cfg = params.cfg
         self.network = network.cuda()
         self.network.eval()
@@ -91,7 +92,9 @@ class SSTrack(BaseTracker):
             template_bbox = self.transform_bbox_to_crop(info['init_bbox'], resize_factor,
                                                         template.tensors.device).squeeze(1)
             self.memory_masks.append(generate_mask_cond(self.cfg, 1, template.tensors.device, template_bbox))
-        
+
+        self.network.reset_track_query()
+
         # save states
         self.state = info['init_bbox']
         self.frame_id = 0

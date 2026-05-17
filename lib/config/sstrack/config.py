@@ -31,6 +31,8 @@ cfg.MODEL.BACKBONE.ATTN_TYPE = 'concat'
 cfg.MODEL.BACKBONE.CE_LOC = []
 cfg.MODEL.BACKBONE.CE_KEEP_RATIO = []
 cfg.MODEL.BACKBONE.CE_TEMPLATE_RANGE = 'ALL'  # choose between ALL, CTR_POINT, CTR_REC, GT_BOX
+# spatial pos per frame + lvl_embed for multi-template / multi-search (False = legacy stacked search pos)
+cfg.MODEL.BACKBONE.USE_LVL_EMBED = True
 
 # MODEL.HEAD
 cfg.MODEL.HEAD = edict()

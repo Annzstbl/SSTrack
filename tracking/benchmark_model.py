@@ -56,7 +56,7 @@ class SSTrackProfileWrapper(nn.Module):
         assert len(tensors) == nt + ns, (len(tensors), nt, ns)
         template = list(tensors[:nt])
         search = list(tensors[nt:])
-        self.model.track_query = None
+        self.model.reset_track_query()
         out = self.model(template=template, search=search, ce_template_mask=None)
         return out[-1]['score_map']
 
@@ -120,7 +120,7 @@ def measure_fps(
     # Warmup
     with torch.no_grad():
         for _ in range(warmup):
-            model.track_query = None
+            model.reset_track_query()
             _ = model(template=template, search=search, ce_template_mask=None)
     if device.type == 'cuda':
         torch.cuda.synchronize()
@@ -128,7 +128,7 @@ def measure_fps(
     with torch.no_grad():
         t0 = time.perf_counter()
         for _ in range(iters):
-            model.track_query = None
+            model.reset_track_query()
             _ = model(template=template, search=search, ce_template_mask=None)
         if device.type == 'cuda':
             torch.cuda.synchronize()

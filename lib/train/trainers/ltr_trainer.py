@@ -53,6 +53,27 @@ class LTRTrainer(BaseTrainer):
         if use_amp:
             self.scaler = GradScaler()
 
+        self.max_epochs = None
+        self.global_train_start_time = None
+
+    @staticmethod
+    def _format_duration(seconds):
+        """Format seconds as H:MM:SS (or M:SS when under one hour)."""
+        if seconds < 0 or seconds == float('inf') or seconds != seconds:
+            return '?'
+        seconds = int(seconds)
+        h, rem = divmod(seconds, 3600)
+        m, s = divmod(rem, 60)
+        if h > 0:
+            return f'{h:d}:{m:02d}:{s:02d}'
+        return f'{m:d}:{s:02d}'
+
+    def train(self, max_epochs, load_latest=False, fail_safe=True, load_previous_ckpt=False, distill=False):
+        self.max_epochs = max_epochs
+        self.global_train_start_time = time.time()
+        super().train(max_epochs, load_latest=load_latest, fail_safe=fail_safe,
+                      load_previous_ckpt=load_previous_ckpt, distill=distill)
+
     def _set_default_settings(self):
         # Dict of all default values
         default = {'print_interval': 10,
@@ -117,12 +138,17 @@ class LTRTrainer(BaseTrainer):
                 if self.settings.local_rank in [-1, 0]:
                     self.wandb_writer.write_log(self.stats, self.epoch)
 
-        # calculate ETA after every epoch
-        epoch_time = self.prev_time - self.start_time
-        print("Epoch Time: " + str(datetime.timedelta(seconds=epoch_time)))
+        epoch_time = time.time() - self.start_time
+        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f'[{loader.name}] Epoch {self.epoch} done at {now_str}  ,  '
+              f'EpochTime: {self._format_duration(epoch_time)}')
         print("Avg Data Time: %.5f" % (self.avg_date_time / self.num_frames * batch_size))
         print("Avg GPU Trans Time: %.5f" % (self.avg_gpu_trans_time / self.num_frames * batch_size))
         print("Avg Forward Time: %.5f" % (self.avg_forward_time / self.num_frames * batch_size))
+        if loader.training and self.max_epochs is not None and self.global_train_start_time is not None:
+            train_eta = self._estimate_train_eta(loader.__len__(), loader.__len__())
+            print(f'Training ETA: {self._format_duration(train_eta)}  '
+                  f'(epoch {self.epoch}/{self.max_epochs})')
 
     def train_epoch(self):
         """Do one epoch for each loader."""
@@ -144,6 +170,19 @@ class LTRTrainer(BaseTrainer):
         self.avg_date_time = 0
         self.avg_gpu_trans_time = 0
         self.avg_forward_time = 0
+
+    def _estimate_train_eta(self, loader_len, batch_idx):
+        """ETA (seconds) until max_epochs, using global wall-clock since train() started."""
+        if self.max_epochs is None or self.global_train_start_time is None or loader_len <= 0:
+            return float('inf')
+        elapsed = time.time() - self.global_train_start_time
+        completed_epochs = (self.epoch - 1) + batch_idx / loader_len
+        if completed_epochs <= 0:
+            return float('inf')
+        remaining_epochs = self.max_epochs - completed_epochs
+        if remaining_epochs <= 0:
+            return 0
+        return elapsed / completed_epochs * remaining_epochs
 
     def _update_stats(self, new_stats: OrderedDict, batch_size, loader):
         # Initialize stats if not initialized yet
@@ -177,7 +216,17 @@ class LTRTrainer(BaseTrainer):
         self.avg_forward_time += current_time - self.data_to_gpu_time
 
         if i % self.settings.print_interval == 0 or i == loader.__len__():
-            print_str = '[%s: %d, %d / %d] ' % (loader.name, self.epoch, i, loader.__len__())
+            loader_len = loader.__len__()
+            now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            elapsed_epoch = current_time - self.start_time
+            eta_epoch = (elapsed_epoch / i * (loader_len - i)) if i > 0 else 0
+
+            print_str = '[%s: %d, %d / %d] ' % (loader.name, self.epoch, i, loader_len)
+            print_str += 'Time: %s  ,  ' % now_str
+            print_str += 'ETA_epoch: %s  ,  ' % self._format_duration(eta_epoch)
+            if loader.training and self.max_epochs is not None:
+                eta_train = self._estimate_train_eta(loader_len, i)
+                print_str += 'ETA_train: %s  ,  ' % self._format_duration(eta_train)
             print_str += 'FPS: %.1f (%.1f)  ,  ' % (average_fps, batch_fps)
 
             # 2021.12.14 add data time print

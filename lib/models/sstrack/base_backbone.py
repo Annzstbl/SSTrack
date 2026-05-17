@@ -24,6 +24,9 @@ class BaseBackbone(nn.Module):
 
         self.pos_embed_z = None
         self.pos_embed_x = None
+        self.template_lvl_embed = None
+        self.search_lvl_embed = None
+        self.use_lvl_embed = True
 
         self.template_segment_pos_embed = None
         self.search_segment_pos_embed = None
@@ -32,6 +35,32 @@ class BaseBackbone(nn.Module):
         self.return_stage = [2, 5, 8, 11]
 
         self.add_sep_seg = False
+
+    def _apply_template_position_embed(self, z, B, T_z):
+        """Single-frame spatial pos + per-template-frame lvl on (B*T_z, L, C)."""
+        L = z.shape[1]
+        if self.use_lvl_embed:
+            z = z.view(B, T_z, L, -1)
+            z = z + self.pos_embed_z.unsqueeze(1)
+            if self.template_lvl_embed is not None:
+                z = z + self.template_lvl_embed[:, :T_z, :].unsqueeze(2)
+            return z.flatten(1, 2)
+        z = z + self.pos_embed_z
+        if T_z > 1:
+            z = z.view(B, T_z, L, -1).flatten(1, 2)
+        return z
+
+    def _apply_search_position_embed(self, x, num_searches):
+        """Single-frame spatial pos + per-search-frame lvl on concatenated search tokens."""
+        B, _, C = x.shape
+        L = x.shape[1] // num_searches
+        if self.use_lvl_embed:
+            x = x.view(B, num_searches, L, -1)
+            x = x + self.pos_embed_x.unsqueeze(1)
+            if self.search_lvl_embed is not None:
+                x = x + self.search_lvl_embed[:, :num_searches, :].unsqueeze(2)
+            return x.flatten(1, 2)
+        return x + self.pos_embed_x
 
     def finetune_track(self, cfg, patch_start_index=1):
 
@@ -43,8 +72,9 @@ class BaseBackbone(nn.Module):
         self.return_inter = cfg.MODEL.RETURN_INTER
         self.return_stage = cfg.MODEL.RETURN_STAGES
         self.add_sep_seg = cfg.MODEL.BACKBONE.SEP_SEG
-        
-        num_seraches = cfg.DATA.SEARCH.LENGTH
+        self.use_lvl_embed = bool(getattr(cfg.MODEL.BACKBONE, 'USE_LVL_EMBED', True))
+        num_template_frames = int(getattr(cfg.DATA.TEMPLATE, 'NUMBER', 1))
+        num_search_frames = int(cfg.DATA.SEARCH.LENGTH)
 
         # resize patch embedding
         if new_patch_size != self.patch_size:
@@ -68,9 +98,12 @@ class BaseBackbone(nn.Module):
         P_H, P_W = self.img_size[0] // self.patch_size, self.img_size[1] // self.patch_size
         patch_pos_embed = patch_pos_embed.view(B, E, P_H, P_W)
 
-        # for search region
+        # for search region (single-frame spatial grid; frame index via search_lvl_embed)
         H, W = search_size
-        new_P_H, new_P_W = num_seraches * H // new_patch_size, W // new_patch_size
+        if self.use_lvl_embed:
+            new_P_H, new_P_W = H // new_patch_size, W // new_patch_size
+        else:
+            new_P_H, new_P_W = num_search_frames * H // new_patch_size, W // new_patch_size
         search_patch_pos_embed = nn.functional.interpolate(patch_pos_embed, size=(new_P_H, new_P_W), mode='bicubic',
                                                            align_corners=False)
         search_patch_pos_embed = search_patch_pos_embed.flatten(2).transpose(1, 2)
@@ -84,6 +117,17 @@ class BaseBackbone(nn.Module):
 
         self.pos_embed_z = nn.Parameter(template_patch_pos_embed)
         self.pos_embed_x = nn.Parameter(search_patch_pos_embed)
+
+        if self.use_lvl_embed:
+            self.template_lvl_embed = nn.Parameter(
+                torch.zeros(1, num_template_frames, self.embed_dim))
+            self.search_lvl_embed = nn.Parameter(
+                torch.zeros(1, num_search_frames, self.embed_dim))
+            trunc_normal_(self.template_lvl_embed, std=.02)
+            trunc_normal_(self.search_lvl_embed, std=.02)
+        else:
+            self.template_lvl_embed = None
+            self.search_lvl_embed = None
 
         # for cls token (keep it but not used)
         if self.add_cls_token and patch_start_index > 0:
@@ -220,16 +264,12 @@ class BaseBackbone(nn.Module):
                 query = new_query if track_query is None else track_query + new_query
             query = query + self.cls_pos_embed
         
-        z = z + self.pos_embed_z
-        x = x + self.pos_embed_x
+        z = self._apply_template_position_embed(z, B, T_z)
+        x = self._apply_search_position_embed(x, num_searches)
 
         if self.add_sep_seg:
             x = x + self.search_segment_pos_embed
             z = z + self.template_segment_pos_embed
-
-        if T_z > 1:  # multiple memory frames
-            z = z.view(B, T_z, -1, z.size()[-1]).contiguous()
-            z = z.flatten(1, 2)
 
         lens_z = z.shape[1]  # HW
         lens_x = x.shape[1]  # HW

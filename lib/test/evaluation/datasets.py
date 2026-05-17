@@ -10,6 +10,8 @@ seg = "lib.train.dataset.%s"
 dataset_dict = dict(
     hsitrack=DatasetInfo(module=pt % "hsitrack", class_name="HSITrackDataset", kwargs=dict(split='test')),
     musthsi=DatasetInfo(module=pt % "musthsi", class_name="MUSTHSIDataset", kwargs=dict(split='test')),
+    # 与 musthsi 相同类，但读 MUSTHSI 根目录下的 train/（list.txt + 各序列），用于看训练集序列上的跟踪表现
+    musthsi_train=DatasetInfo(module=pt % "musthsi", class_name="MUSTHSIDataset", kwargs=dict(split='train')),
 )
 
 

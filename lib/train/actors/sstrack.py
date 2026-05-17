@@ -75,6 +75,8 @@ class SSTrackActor(BaseActor):
         # if len(template_list) == 1:
         #     template_list = template_list[0]
 
+        self.net.reset_track_query()
+
         out_dict = self.net(template=template_list,
                             search=search_list,
                             ce_template_mask=box_mask_z,

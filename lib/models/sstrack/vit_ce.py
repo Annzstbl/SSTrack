@@ -215,6 +215,8 @@ class VisionTransformerCE(VisionTransformer):
             elif token_type == "add":
                 new_query = self.cls_token.expand(B, token_len, -1)  # copy B times
                 query = new_query if track_query is None else track_query + new_query
+            else:
+                raise ValueError(f"Unknown token_type: {token_type!r}, expected 'concat' or 'add'")
             query = query + self.cls_pos_embed
         
         z = self._apply_template_position_embed(z, B, T_z)
@@ -298,7 +300,6 @@ class VisionTransformerCE(VisionTransformer):
                 template_drop_strategy="random",
                 template_drop_query=None,
                 template_hard_ratio=0.5):
-        assert token_type == "concat", "token_type must be concat"                
         x, aux_dict, top_k_indices = self.forward_features(
             z, x, ce_template_mask=ce_template_mask, ce_keep_rate=ce_keep_rate,
             track_query=track_query, token_type=token_type, token_len=token_len,

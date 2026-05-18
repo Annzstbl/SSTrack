@@ -366,6 +366,7 @@ class SSTrack(nn.Module):
         self.track_query = None
         self.token_len = token_len
         self.num_searches = num_searches
+        self.token_type = cfg.MODEL.BACKBONE.ATTN_TYPE
         
         # self.prompt = ATTFu(768)
         # # 方案1：使用交叉注意力机制
@@ -461,7 +462,7 @@ class SSTrack(nn.Module):
                     template_drop_query=drop_query,
                     template_hard_ratio=cvtp.hard_ratio,
                 ),
-                token_type="concat"
+                token_type=self.token_type,
             )
             # search部分只保留最后一个search的特征图
             x = torch.cat((x_[:, :-1 * self.num_searches * self.feat_len_s, :], x_[:, -self.feat_len_s:, :]), dim=1)

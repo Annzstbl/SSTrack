@@ -73,6 +73,7 @@ class VisionTransformerCE(VisionTransformer):
 
         self.add_cls_token = add_cls_token
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.track_query_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.dist_token = nn.Parameter(torch.zeros(1, 1, embed_dim)) if distilled else None
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + self.num_tokens, embed_dim))
         self.pos_drop = nn.Dropout(p=drop_rate)
@@ -98,6 +99,7 @@ class VisionTransformerCE(VisionTransformer):
         self.norm = norm_layer(embed_dim)
 
         self.init_weights(weight_init)
+        nn.init.trunc_normal_(self.track_query_token, std=0.02)
 
         self.template_null_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         nn.init.trunc_normal_(self.template_null_token, std=0.02)
@@ -167,6 +169,7 @@ class VisionTransformerCE(VisionTransformer):
                          ce_template_mask=None, ce_keep_rate=None,
                          return_last_attn=False, track_query=None,
                          token_type="add", token_len=1,
+                         separate_track_cls=False, track_query_len=1, cls_token_len=1,
                          template_drop_rate=0.0, template_drop_mode="null",
                          template_drop_strategy="random",
                          template_drop_query=None,
@@ -205,19 +208,12 @@ class VisionTransformerCE(VisionTransformer):
             mask_x = mask_x.squeeze(-1)
 
         if self.add_cls_token:
-            if token_type == "concat":
-                if track_query is None:
-                    query = self.cls_token.expand(B, token_len, -1)
-                else:
-                    track_len = track_query.size(1)
-                    new_query = self.cls_token.expand(B, token_len - track_len, -1)
-                    query = torch.cat([new_query, track_query], dim=1)
-            elif token_type == "add":
-                new_query = self.cls_token.expand(B, token_len, -1)  # copy B times
-                query = new_query if track_query is None else track_query + new_query
-            else:
-                raise ValueError(f"Unknown token_type: {token_type!r}, expected 'concat' or 'add'")
-            query = query + self.cls_pos_embed
+            query, query_len, eff_track_len, eff_cls_len = self._build_prefix_tokens(
+                B, track_query, token_type, token_len,
+                separate_track_cls, track_query_len, cls_token_len,
+            )
+        else:
+            query, query_len, eff_track_len, eff_cls_len = None, 0, 0, 0
         
         z = self._apply_template_position_embed(z, B, T_z)
         x = self._apply_search_position_embed(x, num_searches)
@@ -231,24 +227,23 @@ class VisionTransformerCE(VisionTransformer):
 
         x = combine_tokens(z, x, mode=self.cat_mode)  # (B, z+x, 768)
         if self.add_cls_token:
-            x = torch.cat([query, x], dim=1)     # (B, 1+z+x, 768)
-            query_len = query.size(1)
+            x = torch.cat([query, x], dim=1)     # (B, prefix+z+x, 768)
         x = self.pos_drop(x)
 
         global_index_t = torch.linspace(0, lens_z - 1, lens_z).to(x.device)
         global_index_t = global_index_t.repeat(B, 1)
         global_index_s = torch.linspace(0, lens_x - 1, lens_x).to(x.device)
         global_index_s = global_index_s.repeat(B, 1)
+
+        blk_kw = self._block_kwargs(
+            self.add_cls_token, query_len, lens_z, lens_x,
+            separate_track_cls, eff_track_len, eff_cls_len,
+        )
         
         removed_indexes_s = []
         for i, blk in enumerate(self.blocks):
-            if self.add_cls_token:
-                x, global_index_t, global_index_s, removed_index_s, attn = \
-                    blk(x, global_index_t, global_index_s, mask_x, ce_template_mask, ce_keep_rate, 
-                        add_cls_token=self.add_cls_token, query_len=query_len, lens_z=lens_z, lens_x=lens_x)
-            else:
-                x, global_index_t, global_index_s, removed_index_s, attn = \
-                    blk(x, global_index_t, global_index_s, mask_x, ce_template_mask, ce_keep_rate, add_cls_token=self.add_cls_token)
+            x, global_index_t, global_index_s, removed_index_s, attn = \
+                blk(x, global_index_t, global_index_s, mask_x, ce_template_mask, ce_keep_rate, **blk_kw)
                 
             if self.ce_loc is not None and i in self.ce_loc:
                 removed_indexes_s.append(removed_index_s)
@@ -296,6 +291,7 @@ class VisionTransformerCE(VisionTransformer):
     def forward(self, z, x, ce_template_mask=None, ce_keep_rate=None,
                 tnc_keep_rate=None, return_last_attn=False, track_query=None,
                 token_type="add", token_len=1,
+                separate_track_cls=False, track_query_len=1, cls_token_len=1,
                 template_drop_rate=0.0, template_drop_mode="null",
                 template_drop_strategy="random",
                 template_drop_query=None,
@@ -303,6 +299,8 @@ class VisionTransformerCE(VisionTransformer):
         x, aux_dict, top_k_indices = self.forward_features(
             z, x, ce_template_mask=ce_template_mask, ce_keep_rate=ce_keep_rate,
             track_query=track_query, token_type=token_type, token_len=token_len,
+            separate_track_cls=separate_track_cls, track_query_len=track_query_len,
+            cls_token_len=cls_token_len,
             template_drop_rate=template_drop_rate, template_drop_mode=template_drop_mode,
             template_drop_strategy=template_drop_strategy,
             template_drop_query=template_drop_query,

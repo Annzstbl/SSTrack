@@ -62,10 +62,15 @@ class CEBlock(nn.Module):
 
         self.keep_ratio_search = keep_ratio_search
 
-    def forward(self, x, global_index_template, global_index_search, mask=None, ce_template_mask=None, keep_ratio_search=None, 
-                add_cls_token=False, query_len=1, lens_z=432, lens_x=576):
+    def forward(self, x, global_index_template, global_index_search, mask=None, ce_template_mask=None, keep_ratio_search=None,
+                add_cls_token=False, query_len=1, lens_z=432, lens_x=576,
+                separate_track_cls=False, track_query_len=1, cls_token_len=1):
         # 计算非对称注意力，query_len是提示长度，lens_z是模板数量*模板长度，lens_x是搜索数量*搜索长度
-        x_attn, attn = self.attn(self.norm1(x), mask, True, query_len=query_len, lens_z=lens_z, lens_x=lens_x, add_cls_token=add_cls_token)
+        x_attn, attn = self.attn(
+            self.norm1(x), mask, True,
+            query_len=query_len, lens_z=lens_z, lens_x=lens_x, add_cls_token=add_cls_token,
+            separate_track_cls=separate_track_cls, track_query_len=track_query_len, cls_token_len=cls_token_len,
+        )
         x = x + self.drop_path(x_attn)
         lens_t = global_index_template.shape[1]
 

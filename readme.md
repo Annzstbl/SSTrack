@@ -125,8 +125,21 @@ sstrack_baseline_must_trans_enc_cope_cvtp_4      | 47.88      | 58.22      | 38.
 
 
 # 再评测一遍冯涛
-CUDA_VISIBLE_DEVICES=3 python tracking/test.py sstrack baseline_must_trans_enc_cope --dataset MUSTHSI --save_dir /data4/litianhao/must2 --threads 1
+CUDA_VISIBLE_DEVICES=3 python tracking/test.py sstrack baseline_must_trans_enc_cope --dataset MUSTHSI --save_dir /data4/litianhao/must2 --threads 4
 python tracking/analysis_results.py --tracker_param baseline_must_trans_enc_cope
 
 MUSTHSI                                   | AUC        | OP50       | OP75       | Precision    | Norm Precision    |
-sstrack_baseline_must_trans_enc_cope      | 62.79      | 78.47      | 53.75      | 82.36        | 79.66             |
+sstrack_baseline_must_trans_enc_cope      | 62.79      | 78.47      | 53.75      | 82.36        | 79.66             |、
+
+
+# dual_token
+CUDA_VISIBLE_DEVICES=3 nohup python -u tracking/train.py \
+  --script sstrack \
+  --config baseline_must_dual_token \
+  --save_dir /data4/litianhao/must2 \
+  --mode single \
+  > logs/baseline_must_dual_token.log 2>&1 &
+
+推理和评测
+CUDA_VISIBLE_DEVICES=3 python tracking/test.py sstrack baseline_must_dual_token --dataset MUSTHSI --save_dir /data4/litianhao/must2 --threads 4
+python tracking/analysis_results.py --tracker_param baseline_must_dual_token

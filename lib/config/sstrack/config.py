@@ -12,6 +12,10 @@ cfg.MODEL.PRETRAIN_FILE = "mae_pretrain_vit_base.pth"
 cfg.MODEL.PROMPT_TYPE = "original"
 cfg.MODEL.EXTRA_MERGER = False
 
+# MODEL.PROMPT (trans_enc 等 prompt 模块参数)
+cfg.MODEL.PROMPT = edict()
+cfg.MODEL.PROMPT.FINAL_RESIDUAL_AND_NORM = False
+
 cfg.MODEL.RETURN_INTER = False
 cfg.MODEL.RETURN_STAGES = []
 
@@ -25,6 +29,11 @@ cfg.MODEL.BACKBONE.CAT_MODE = 'direct'
 cfg.MODEL.BACKBONE.MERGE_LAYER = 0
 cfg.MODEL.BACKBONE.ADD_CLS_TOKEN = False
 cfg.MODEL.BACKBONE.TOKEN_LEN = 1
+# 双 token 模式：track_query 负责 memory，cls_token 负责与 search 交互并过 head
+# 旧实验 yaml 未显式设置时保持 False，避免破坏合并 token 行为
+cfg.MODEL.BACKBONE.SEPARATE_TRACK_CLS = False
+cfg.MODEL.BACKBONE.TRACK_QUERY_LEN = 1
+cfg.MODEL.BACKBONE.CLS_TOKEN_LEN = 1
 cfg.MODEL.BACKBONE.CLS_TOKEN_USE_MODE = 'ignore'
 cfg.MODEL.BACKBONE.ATTN_TYPE = 'concat'
 

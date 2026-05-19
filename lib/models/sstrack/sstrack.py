@@ -372,7 +372,17 @@ class SSTrack(nn.Module):
         self.token_len = token_len
         self.num_searches = num_searches
         self.token_type = cfg.MODEL.BACKBONE.ATTN_TYPE
-        
+        backbone_cfg = cfg.MODEL.BACKBONE
+        self.separate_track_cls = (
+            bool(getattr(backbone_cfg, 'SEPARATE_TRACK_CLS', False))
+            and backbone_cfg.ADD_CLS_TOKEN
+        )
+        self.track_query_len = int(getattr(backbone_cfg, 'TRACK_QUERY_LEN', 1))
+        self.cls_token_len = int(getattr(backbone_cfg, 'CLS_TOKEN_LEN', 1))
+        self.prefix_len = (
+            self.track_query_len + self.cls_token_len
+            if self.separate_track_cls else self.token_len
+        )
         # self.prompt = ATTFu(768)
         # # 方案1：使用交叉注意力机制
         # self.prompt = ATTFu_CrossAttention(768, num_heads=8)
@@ -393,7 +403,15 @@ class SSTrack(nn.Module):
             self.prompt = ATTFu_GatedFusion(768)
         # 方案3：使用 Transformer 编码器
         elif self.cfg.MODEL.PROMPT_TYPE == "trans_enc":
-            self.prompt = ATTFu_TransformerEncoder(768, num_layers=2, num_heads=8)
+            prompt_cfg = getattr(self.cfg.MODEL, "PROMPT", None)
+            final_residual_and_norm = (
+                bool(getattr(prompt_cfg, "FINAL_RESIDUAL_AND_NORM", False))
+                if prompt_cfg is not None else False
+            )
+            self.prompt = ATTFu_TransformerEncoder(
+                768, num_layers=2, num_heads=8,
+                final_residual_and_norm=final_residual_and_norm,
+            )
         else:
             raise ValueError("Unknown PROMPT_TYPE")
 
@@ -450,8 +468,7 @@ class SSTrack(nn.Module):
             cur_drop = cvtp.drop_rate if use_cvtp_drop else 0.0
             drop_query = track_query if use_cvtp_drop else None
             # search的提取做了修改，以获取list形式的search
-            # 返回的x_大致为 cls_token + 模板tokens + 搜索tokens
-            # self.feat_len_s = 576
+            # 返回的 x_ 大致为 [track_query?, cls_token?, template, search]
             x_, aux_dict, top_k_indices = self.backbone(
                 z=template.copy(),
                 x=[search[idx] for idx in range(i - self.num_searches + 1, i + 1)],
@@ -460,6 +477,9 @@ class SSTrack(nn.Module):
                 return_last_attn=return_last_attn,
                 track_query=track_query,
                 token_len=self.token_len,
+                separate_track_cls=self.separate_track_cls,
+                track_query_len=self.track_query_len,
+                cls_token_len=self.cls_token_len,
                 **self._backbone_template_drop_kw(
                     cur_drop,
                     "null",
@@ -472,17 +492,25 @@ class SSTrack(nn.Module):
             # search部分只保留最后一个search的特征图
             x = torch.cat((x_[:, :-1 * self.num_searches * self.feat_len_s, :], x_[:, -self.feat_len_s:, :]), dim=1)
 
-            feat_last = x   # x.shape torch.Size([Bs, 1009, 768]); 1009 = 1 + 3*144 + 576
+            feat_last = x   # x.shape torch.Size([Bs, 1009/1010, 768]); 1009/1010 = 1/2 + 3*144 + 576
             if isinstance(x, list):
                 feat_last = x[-1]
 
-            enc_opt = feat_last[:, -self.feat_len_s:]  # encoder output for the search region (B, HW, 576)    # enc_opt.shape torch.Size([Bs, 576, 768])
+            enc_opt = feat_last[:, -self.feat_len_s:]
             if self.backbone.add_cls_token:
-                t_query = x[:, :self.token_len]
-                z_query = x[:, self.token_len:-self.feat_len_s]
-                track_query = self.prompt(t_query.detach(), z_query.detach()) #只训练self.prompt
+                if self.separate_track_cls:
+                    t_query = x[:, :self.track_query_len]
+                    cls_token = x[:, self.track_query_len:self.prefix_len]
+                    z_query = x[:, self.prefix_len:-self.feat_len_s]
+                else:
+                    t_query = x[:, :self.token_len]
+                    cls_token = x[:, :1]
+                    z_query = x[:, self.token_len:-self.feat_len_s]
+                track_query = self.prompt(t_query.detach(), z_query.detach())
+            else:
+                cls_token = x[:, :1]
 
-            att = torch.matmul(enc_opt, x[:, :1].transpose(1, 2))  # (B, HW, N)
+            att = torch.matmul(enc_opt, cls_token.transpose(1, 2))  # (B, HW, N)
             opt = (enc_opt.unsqueeze(-1) * att.unsqueeze(-2)).permute((0, 3, 2, 1)).contiguous()  # (B, HW, C, N) --> (B, N, C, HW)
 
             # print((int((enc_opt.abs().amax(dim=-1) < 1e-6).sum().item()), int(enc_opt.shape[1])))

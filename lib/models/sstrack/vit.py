@@ -161,6 +161,7 @@ class VisionTransformer(BaseBackbone):
 
         self.add_cls_token = add_cls_token
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.track_query_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.dist_token = nn.Parameter(torch.zeros(1, 1, embed_dim)) if distilled else None
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + self.num_tokens, embed_dim))
         self.pos_drop = nn.Dropout(p=drop_rate)
@@ -202,6 +203,7 @@ class VisionTransformer(BaseBackbone):
             named_apply(partial(_init_vit_weights, head_bias=head_bias, jax_impl=True), self)
         else:
             trunc_normal_(self.cls_token, std=.02)
+            trunc_normal_(self.track_query_token, std=.02)
             self.apply(_init_vit_weights)
 
     def _init_weights(self, m):

@@ -30,49 +30,93 @@ class Attention(nn.Module):
                                                                           relative_position_index.max() + 1)))
             trunc_normal_(self.relative_position_bias_table, std=0.02)
 
-    def forward(self, x, mask=None, return_attention=False, query_len=1, lens_z=432, lens_x=576, add_cls_token=True):
+    def forward(self, x, mask=None, return_attention=False, query_len=1, lens_z=432, lens_x=576,
+                add_cls_token=True, separate_track_cls=False, track_query_len=1, cls_token_len=1):
         # x: B, N, C
         # mask: [B, N, ] torch.bool
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)   # make torchscript happy (cannot use tensor as tuple)
-        
-        if add_cls_token:
+
+        if add_cls_token and separate_track_cls:
+            lens_x = N - query_len - lens_z
+            q_track, q_cls, q_template, q_search = torch.split(
+                q, [track_query_len, cls_token_len, lens_z, lens_x], dim=2)
+            k_track, k_cls, k_template, k_search = torch.split(
+                k, [track_query_len, cls_token_len, lens_z, lens_x], dim=2)
+            v_track, v_cls, v_template, v_search = torch.split(
+                v, [track_query_len, cls_token_len, lens_z, lens_x], dim=2)
+
+            k_track_mem = torch.cat([k_track, k_template], dim=2)
+            v_track_mem = torch.cat([v_track, v_template], dim=2)
+            attn_track = (q_track @ k_track_mem.transpose(-2, -1)) * self.scale
+            attn_track = attn_track.softmax(dim=-1)
+            attn_track = self.attn_drop(attn_track)
+            x_track = (attn_track @ v_track_mem).transpose(1, 2).reshape(B, track_query_len, C)
+
+            attn_cls = (q_cls @ k.transpose(-2, -1)) * self.scale
+            attn_cls = attn_cls.softmax(dim=-1)
+            attn_cls = self.attn_drop(attn_cls)
+            x_cls = (attn_cls @ v).transpose(1, 2).reshape(B, cls_token_len, C)
+
+            attn_template = (q_template @ k_template.transpose(-2, -1)) * self.scale
+            attn_template = attn_template.softmax(dim=-1)
+            attn_template = self.attn_drop(attn_template)
+            x_template = (attn_template @ v_template).transpose(1, 2).reshape(B, lens_z, C)
+
+            attn_search = (q_search @ k.transpose(-2, -1)) * self.scale
+            attn_search = attn_search.softmax(dim=-1)
+            attn_search = self.attn_drop(attn_search)
+            x_search = (attn_search @ v).transpose(1, 2).reshape(B, lens_x, C)
+
+            x = torch.cat([x_track, x_cls, x_template, x_search], dim=1)
+            attn = attn_search
+        elif add_cls_token:
             lens_x = N - query_len - lens_z     # 由于光谱候选，搜索的长度可能会改变
             q_prompt, q_template, q_search = torch.split(q, [query_len, lens_z, lens_x], dim=2)
             k_prompt, k_template, k_search = torch.split(k, [query_len, lens_z, lens_x], dim=2)
             v_prompt, v_template, v_search = torch.split(v, [query_len, lens_z, lens_x], dim=2)
-        else:
-            lens_x = N - lens_z
-            q_template, q_search = torch.split(q, [lens_z, lens_x], dim=2)
-            k_template, k_search = torch.split(k, [lens_z, lens_x], dim=2)
-            v_template, v_search = torch.split(v, [lens_z, lens_x], dim=2)
-        
-        # asymmetric attention
-        if add_cls_token:
+
             ## prompt attention
             attn_prompt = (q_prompt @ k_prompt.transpose(-2, -1)) * self.scale
             attn_prompt = attn_prompt.softmax(dim=-1)
             attn_prompt = self.attn_drop(attn_prompt)
             x_prompt = (attn_prompt @ v_prompt).transpose(1, 2).reshape(B, query_len, C)
-        
-        ## template attention
-        attn_template = (q_template @ k_template.transpose(-2, -1)) * self.scale
-        attn_template = attn_template.softmax(dim=-1)
-        attn_template = self.attn_drop(attn_template)
-        x_template = (attn_template @ v_template).transpose(1, 2).reshape(B, lens_z, C)
-        
-        ## search attention
-        attn_search = (q_search @ k.transpose(-2, -1)) * self.scale
-        attn_search = attn_search.softmax(dim=-1)
-        attn_search = self.attn_drop(attn_search)
-        x_search = (attn_search @ v).transpose(1, 2).reshape(B, lens_x, C)
-        
-        if add_cls_token:
+
+            ## template attention
+            attn_template = (q_template @ k_template.transpose(-2, -1)) * self.scale
+            attn_template = attn_template.softmax(dim=-1)
+            attn_template = self.attn_drop(attn_template)
+            x_template = (attn_template @ v_template).transpose(1, 2).reshape(B, lens_z, C)
+
+            ## search attention
+            attn_search = (q_search @ k.transpose(-2, -1)) * self.scale
+            attn_search = attn_search.softmax(dim=-1)
+            attn_search = self.attn_drop(attn_search)
+            x_search = (attn_search @ v).transpose(1, 2).reshape(B, lens_x, C)
+
             x = torch.cat([x_prompt, x_template, x_search], dim=1)
+            attn = attn_search
         else:
+            lens_x = N - lens_z
+            q_template, q_search = torch.split(q, [lens_z, lens_x], dim=2)
+            k_template, k_search = torch.split(k, [lens_z, lens_x], dim=2)
+            v_template, v_search = torch.split(v, [lens_z, lens_x], dim=2)
+
+            ## template attention
+            attn_template = (q_template @ k_template.transpose(-2, -1)) * self.scale
+            attn_template = attn_template.softmax(dim=-1)
+            attn_template = self.attn_drop(attn_template)
+            x_template = (attn_template @ v_template).transpose(1, 2).reshape(B, lens_z, C)
+
+            ## search attention
+            attn_search = (q_search @ k.transpose(-2, -1)) * self.scale
+            attn_search = attn_search.softmax(dim=-1)
+            attn_search = self.attn_drop(attn_search)
+            x_search = (attn_search @ v).transpose(1, 2).reshape(B, lens_x, C)
+
             x = torch.cat([x_template, x_search], dim=1)
-        attn = attn_search
+            attn = attn_search
         ####
 
         # if self.rpe:

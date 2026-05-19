@@ -129,10 +129,12 @@ class BaseBackbone(nn.Module):
             self.template_lvl_embed = None
             self.search_lvl_embed = None
 
-        # for cls token (keep it but not used)
+        # for cls token and track query token positional embeddings
         if self.add_cls_token and patch_start_index > 0:
             cls_pos_embed = self.pos_embed[:, 0:1, :]
             self.cls_pos_embed = nn.Parameter(cls_pos_embed)
+            self.track_pos_embed = nn.Parameter(torch.zeros_like(cls_pos_embed))
+            trunc_normal_(self.track_pos_embed, std=.02)
 
         # separate token and segment token
         if self.add_sep_seg:
@@ -152,78 +154,77 @@ class BaseBackbone(nn.Module):
                     layer_name = f'norm{i_layer}'
                     self.add_module(layer_name, layer)
 
-    # def forward_features(self, z, x, track_query=None, token_type="add"):
-    #     B, H, W = x.shape[0], x.shape[2], x.shape[3]
+    def _build_prefix_tokens(
+            self, B, track_query=None, token_type="add", token_len=1,
+            separate_track_cls=False, track_query_len=1, cls_token_len=1,
+    ):
+        """Build prefix tokens: [track..., cls...] when separated, else legacy merged query."""
+        if not self.add_cls_token:
+            return None, 0, 0, 0
 
-    #     x = self.patch_embed(x)
-        
-    #     z = torch.stack(z, dim=1)
-    #     _, T_z, C_z, H_z, W_z = z.shape
-    #     z = z.flatten(0, 1)
-    #     z = self.patch_embed(z)
+        if separate_track_cls:
+            init_track = self.track_query_token.expand(B, track_query_len, -1)
+            if track_query is not None:
+                prev_len = track_query.size(1)
+                if token_type == "concat":
+                    if prev_len >= track_query_len:
+                        track_tokens = track_query[:, :track_query_len, :]
+                    else:
+                        pad = init_track[:, :track_query_len - prev_len, :]
+                        track_tokens = torch.cat([pad, track_query], dim=1)
+                elif token_type == "add":
+                    if prev_len == track_query_len:
+                        track_tokens = init_track + track_query
+                    elif prev_len < track_query_len:
+                        pad = init_track[:, :track_query_len - prev_len, :]
+                        track_tokens = torch.cat([pad, track_query], dim=1) + init_track
+                    else:
+                        track_tokens = init_track + track_query[:, :track_query_len, :]
+                else:
+                    raise ValueError(f"Unknown token_type: {token_type!r}, expected 'concat' or 'add'")
+            else:
+                track_tokens = init_track
+            track_tokens = track_tokens + self.track_pos_embed
 
-    #     if self.add_cls_token:
-    #         if token_type == "concat":
-    #             new_query = self.cls_token.expand(B, -1, -1)
-    #             query = new_query if track_query is None else torch.cat([new_query, track_query], dim=1)
-    #             query = query + self.cls_pos_embed
-    #         elif token_type == "add":
-    #             query = self.cls_token if track_query is None else track_query + self.cls_token   # self.cls_token is init query
-    #             query = query.expand(B, -1, -1)  # copy B times
-    #             query = query + self.cls_pos_embed
+            cls_tokens = self.cls_token.expand(B, cls_token_len, -1) + self.cls_pos_embed
+            query = torch.cat([track_tokens, cls_tokens], dim=1)
+            query_len = track_query_len + cls_token_len
+            return query, query_len, track_query_len, cls_token_len
 
-    #     z = z + self.pos_embed_z
-    #     x = x + self.pos_embed_x
+        if token_type == "concat":
+            if track_query is None:
+                query = self.cls_token.expand(B, token_len, -1)
+            else:
+                track_len = track_query.size(1)
+                new_query = self.cls_token.expand(B, token_len - track_len, -1)
+                query = torch.cat([new_query, track_query], dim=1)
+        elif token_type == "add":
+            new_query = self.cls_token.expand(B, token_len, -1)
+            query = new_query if track_query is None else track_query + new_query
+        else:
+            raise ValueError(f"Unknown token_type: {token_type!r}, expected 'concat' or 'add'")
+        query = query + self.cls_pos_embed
+        return query, token_len, 0, token_len
 
-    #     if self.add_sep_seg:
-    #         x += self.search_segment_pos_embed
-    #         z += self.template_segment_pos_embed
+    def _block_kwargs(self, add_cls_token, query_len, lens_z, lens_x,
+                      separate_track_cls, track_query_len, cls_token_len):
+        if not add_cls_token:
+            return {"add_cls_token": False}
+        return {
+            "add_cls_token": True,
+            "query_len": query_len,
+            "lens_z": lens_z,
+            "lens_x": lens_x,
+            "separate_track_cls": separate_track_cls,
+            "track_query_len": track_query_len,
+            "cls_token_len": cls_token_len,
+        }
 
-    #     if T_z > 1:  # multiple memory frames
-    #         z = z.view(B, T_z, -1, z.size()[-1]).contiguous()
-    #         z = z.flatten(1, 2)
-        
-    #     lens_z = z.shape[1]  # HW
-    #     lens_x = x.shape[1]  # HW
-    #     x = combine_tokens(z, x, mode=self.cat_mode)  # (B, z+x, 768)
-    #     if self.add_cls_token:
-    #         x = torch.cat([query, x], dim=1)     # (B, 1+z+x, 768)
-
-    #     x = self.pos_drop(x)
-
-    #     for i, blk in enumerate(self.blocks):
-    #         x, attn = blk(x, lens_z, lens_x, return_attention=True)
-        
-    #     new_lens_z = z.shape[1]  # HW
-    #     new_lens_x = x.shape[1]  # HW
-    #     x = recover_tokens(x, new_lens_z, new_lens_x, mode=self.cat_mode)
-
-    #     aux_dict = {"attn": attn}
-        
-    #     return self.norm(x), aux_dict
-
-    # def forward(self, z, x, **kwargs):
-    #     """
-    #     Joint feature extraction and relation modeling for the basic ViT backbone.
-    #     Args:
-    #         z (torch.Tensor): template feature, [B, C, H_z, W_z]
-    #         x (torch.Tensor): search region feature, [B, C, H_x, W_x]
-
-    #     Returns:
-    #         x (torch.Tensor): merged template and search region feature, [B, L_z+L_x, C]
-    #         attn : None
-    #     """
-    #     if "token_type" in kwargs.keys():
-    #         x, aux_dict = self.forward_features(z, x, track_query=kwargs['track_query'], token_type=kwargs['token_type'])
-    #     else:
-    #         x, aux_dict = self.forward_features(z, x, track_query=kwargs['track_query'])
-
-    #     return x, aux_dict
-    
     def forward_features(self, z, xs, mask_z=None, mask_x=None,
                          ce_template_mask=None, ce_keep_rate=None,
                          return_last_attn=False, track_query=None,
-                         token_type="add", token_len=1
+                         token_type="add", token_len=1,
+                         separate_track_cls=False, track_query_len=1, cls_token_len=1,
                          ):
         B, H, W = xs[-1].shape[0], xs[-1].shape[2], xs[-1].shape[3]
         num_searches = len(xs)
@@ -252,17 +253,12 @@ class BaseBackbone(nn.Module):
             mask_x = mask_x.squeeze(-1)
 
         if self.add_cls_token:
-            if token_type == "concat":
-                if track_query is None:
-                    query = self.cls_token.expand(B, token_len, -1)
-                else:
-                    track_len = track_query.size(1)
-                    new_query = self.cls_token.expand(B, token_len - track_len, -1)
-                    query = torch.cat([new_query, track_query], dim=1)
-            elif token_type == "add":
-                new_query = self.cls_token.expand(B, token_len, -1)  # copy B times
-                query = new_query if track_query is None else track_query + new_query
-            query = query + self.cls_pos_embed
+            query, query_len, eff_track_len, eff_cls_len = self._build_prefix_tokens(
+                B, track_query, token_type, token_len,
+                separate_track_cls, track_query_len, cls_token_len,
+            )
+        else:
+            query, query_len, eff_track_len, eff_cls_len = None, 0, 0, 0
         
         z = self._apply_template_position_embed(z, B, T_z)
         x = self._apply_search_position_embed(x, num_searches)
@@ -276,24 +272,23 @@ class BaseBackbone(nn.Module):
 
         x = combine_tokens(z, x, mode=self.cat_mode)  # (B, z+x, 768)
         if self.add_cls_token:
-            x = torch.cat([query, x], dim=1)     # (B, 1+z+x, 768)
-            query_len = query.size(1)
+            x = torch.cat([query, x], dim=1)     # (B, prefix+z+x, 768)
         x = self.pos_drop(x)
 
         global_index_t = torch.linspace(0, lens_z - 1, lens_z).to(x.device)
         global_index_t = global_index_t.repeat(B, 1)
         global_index_s = torch.linspace(0, lens_x - 1, lens_x).to(x.device)
         global_index_s = global_index_s.repeat(B, 1)
+
+        blk_kw = self._block_kwargs(
+            self.add_cls_token, query_len, lens_z, lens_x,
+            separate_track_cls, eff_track_len, eff_cls_len,
+        )
         
         removed_indexes_s = []
         for i, blk in enumerate(self.blocks):
-            if self.add_cls_token:
-                x, global_index_t, global_index_s, removed_index_s, attn = \
-                    blk(x, global_index_t, global_index_s, mask_x, ce_template_mask, ce_keep_rate, 
-                        add_cls_token=self.add_cls_token, query_len=query_len, lens_z=lens_z, lens_x=lens_x)
-            else:
-                x, global_index_t, global_index_s, removed_index_s, attn = \
-                    blk(x, global_index_t, global_index_s, mask_x, ce_template_mask, ce_keep_rate, add_cls_token=self.add_cls_token)
+            x, global_index_t, global_index_s, removed_index_s, attn = \
+                blk(x, global_index_t, global_index_s, mask_x, ce_template_mask, ce_keep_rate, **blk_kw)
                 
             if self.ce_loc is not None and i in self.ce_loc:
                 removed_indexes_s.append(removed_index_s)
@@ -336,8 +331,13 @@ class BaseBackbone(nn.Module):
         return x, aux_dict, top_k_indices
 
     def forward(self, z, x, ce_template_mask=None, ce_keep_rate=None,
-                tnc_keep_rate=None, return_last_attn=False, track_query=None, 
-                token_type="add", token_len=1):
-        x, aux_dict, top_k_indices = self.forward_features(z, x, ce_template_mask=ce_template_mask, ce_keep_rate=ce_keep_rate,
-                                            track_query=track_query, token_type=token_type, token_len=token_len)
+                tnc_keep_rate=None, return_last_attn=False, track_query=None,
+                token_type="add", token_len=1,
+                separate_track_cls=False, track_query_len=1, cls_token_len=1):
+        x, aux_dict, top_k_indices = self.forward_features(
+            z, x, ce_template_mask=ce_template_mask, ce_keep_rate=ce_keep_rate,
+            track_query=track_query, token_type=token_type, token_len=token_len,
+            separate_track_cls=separate_track_cls, track_query_len=track_query_len,
+            cls_token_len=cls_token_len,
+        )
         return x, aux_dict, top_k_indices

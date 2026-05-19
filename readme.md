@@ -120,4 +120,13 @@ CUDA_VISIBLE_DEVICES=3 nohup python -u tracking/train.py \
 
 推理和评测
 CUDA_VISIBLE_DEVICES=3 python tracking/test.py sstrack baseline_must_trans_enc_cope_cvtp_4 --dataset MUSTHSI --save_dir /data4/litianhao/must2 --threads 4 && python tracking/analysis_results.py --tracker_param baseline_must_trans_enc_cope_cvtp_4
-      |
+MUSTHSI                                          | AUC        | OP50       | OP75       | Precision    | Norm Precision    |
+sstrack_baseline_must_trans_enc_cope_cvtp_4      | 47.88      | 58.22      | 38.74      | 61.70        | 59.26             |
+
+
+# 再评测一遍冯涛
+CUDA_VISIBLE_DEVICES=3 python tracking/test.py sstrack baseline_must_trans_enc_cope --dataset MUSTHSI --save_dir /data4/litianhao/must2 --threads 1
+python tracking/analysis_results.py --tracker_param baseline_must_trans_enc_cope
+
+MUSTHSI                                   | AUC        | OP50       | OP75       | Precision    | Norm Precision    |
+sstrack_baseline_must_trans_enc_cope      | 62.79      | 78.47      | 53.75      | 82.36        | 79.66             |

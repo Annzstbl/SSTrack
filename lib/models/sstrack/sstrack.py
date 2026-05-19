@@ -225,12 +225,12 @@ class ATTFu_TransformerEncoder(nn.Module):
     方案三：使用 Transformer 编码器
     特点：使用完整的 Transformer 编码器层，实现深度特征交互
     """
-    def __init__(self, channels, ratio=0.25, num_layers=2, num_heads=8):
+    def __init__(self, channels, ratio=0.25, num_layers=2, num_heads=8, final_residual_and_norm=False):
         super(ATTFu_TransformerEncoder, self).__init__()
         self.channels = channels
         self.num_heads = num_heads
         self.head_dim = channels // num_heads
-        
+        self.final_residual_and_norm = final_residual_and_norm
         assert channels % num_heads == 0, "channels must be divisible by num_heads"
         
         # 位置编码（可选，用于区分 l_pro 和 l_tem）
@@ -255,7 +255,11 @@ class ATTFu_TransformerEncoder(nn.Module):
             nn.GELU(),
             nn.Dropout(0.1)
         )
-        self.final_norm = nn.LayerNorm(channels)
+        if final_residual_and_norm:
+            self.final_norm = nn.LayerNorm(channels)
+        else:
+            self.final_norm = None
+        
         
     def forward(self, l_pro, l_tem):
         """
@@ -315,7 +319,8 @@ class ATTFu_TransformerEncoder(nn.Module):
         out = self.output_proj(l_pro_updated)
 
         # 6. 残差连接 + 层归一化
-        out = self.final_norm(out + l_pro_updated)
+        if self.final_residual_and_norm:
+            out = self.final_norm(out + l_pro_updated)
         
         return out
 

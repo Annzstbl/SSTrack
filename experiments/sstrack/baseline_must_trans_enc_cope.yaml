@@ -59,6 +59,7 @@ MODEL:
     CE_TEMPLATE_RANGE: 'ALL'
     ADD_CLS_TOKEN: True
     ATTN_TYPE: concat
+    USE_LVL_EMBED: false
   HEAD:
     TYPE: CENTER
     NUM_CHANNELS: 256
